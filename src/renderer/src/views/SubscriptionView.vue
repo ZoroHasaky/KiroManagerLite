@@ -365,11 +365,25 @@ interface FreeRow extends BatchRow {
  * 只看订阅状态的话，重启程序后已经切过的账号会重新冒出来、还能被再提交一次。
  * 记录落在 Account.downgradedAt（见 stores/accounts 的 markDowngraded）。
  */
-const paidAccounts = computed(() =>
+const eligibleFreeAccounts = computed(() =>
   accountsStore.liveAccounts.filter(
     (account) =>
       account.subscription.type !== 'Free' && !accountsStore.hasPendingDowngrade(account)
   )
+)
+
+/**
+ * 强制模式：不按上面的判据过滤，把全部账号都列出来。
+ *
+ * 用途是纠偏——本地记录和门户上的真实状态可能对不上：记录说「已提交切换」但其实没生效，
+ * 或者本地还显示付费档、门户上早就是 Free 了。这两种情况都只有真的问一次门户才知道结果，
+ * 所以强制模式既放宽列表，也要求每个号都实查一遍（结果仍以门户返回为准）。
+ */
+const forceFree = ref(false)
+
+/** 列表里实际展示的账号：强制模式下就是全部账号 */
+const freeListAccounts = computed(() =>
+  forceFree.value ? accountsStore.liveAccounts : eligibleFreeAccounts.value
 )
 
 const freeRows = ref<FreeRow[]>([])
@@ -377,22 +391,30 @@ const freeListRef = ref<HTMLElement | null>(null)
 const freeSelected = ref<Set<string>>(new Set())
 
 /**
- * 与「获取链接」不同：这个列表**跟着状态收缩**。
+ * 与「获取链接」不同：正常模式下这个列表**跟着状态收缩**。
  *
  * 「切换 Free」只对还没处理过的账号有意义，处理完就该从列表里消失；
  * 继续留着会让用户以为还有一批待处理，也容易对同一个号重复发起切换。
  * 代价是正在跑的批次行会中途消失，所以 useBatchRun 内部持有队列快照
  * （见 utils/batchRun），执行本身不受列表变化影响。
+ *
+ * 强制模式下不收缩：那正是「所有账号都显示」的语义，结果留在行上就够了。
  */
 watch(
-  [paidAccounts, () => accountsStore.liveAccounts],
-  ([eligible, live]) => {
+  [freeListAccounts, () => accountsStore.liveAccounts, forceFree],
+  ([eligible, live, force]) => {
     const liveById = new Map(live.map((account) => [account.id, account]))
 
     const next: FreeRow[] = []
     for (const row of freeRows.value) {
       const fresh = liveById.get(row.account.id)
       if (!fresh) continue
+      // 强制模式：行只跟着账号数据刷新，不因为订阅状态或执行结果被剔除
+      if (force) {
+        row.account = fresh
+        next.push(row)
+        continue
+      }
       // 刚处理完的行还处在结果展示期，等它自己的定时器移除，别在这里提前抹掉
       const showingResult = row.removeAt !== undefined && Date.now() < row.removeAt
       if (showingResult) {
@@ -427,6 +449,12 @@ watch(
   { immediate: true }
 )
 
+/** 切换强制模式：列表由上面的 watch 重建，这里清掉勾选，避免留下指向已消失行的幽灵项 */
+function onForceChange(checked: boolean): void {
+  forceFree.value = checked
+  freeSelected.value = new Set()
+}
+
 const selectedFreeRows = computed(() =>
   freeRows.value.filter((row) => freeSelected.value.has(row.account.id))
 )
@@ -459,12 +487,22 @@ const freeBatch = useBatchRun({
     /*
      * 把「已提交」这个事实落盘。
      *
-     * 三种「无需变更」的情况也要记：它们同样意味着这个号不需要再出现在待切换列表里
-     * （本来就是 Free 的下一轮刷新就不会进来了，但已安排 / 不续费的订阅档位仍是原值，
-     * 不记的话重启后又会冒出来）。transitionAt 只对「已安排」和「已提交」有效，
-     * 到期后记录自动失效。
+     * 「已安排」和「不续费」也要记：它们的订阅档位仍是原值，不记的话重启后
+     * 又会冒出来。transitionAt 只对「已安排」和「已提交」有效，到期后记录自动失效。
+     *
+     * 「本来就是 Free」不记：那不是一个待生效的变更，写进去会留下一条永远等不到
+     * 生效时间的悬空记录（强制模式下每个 Free 号都会轮一遍，噪声尤其明显）。
      */
-    accountsStore.markDowngraded(row.account.id, result.transitionAt)
+    if (!result.alreadyFree) accountsStore.markDowngraded(row.account.id, result.transitionAt)
+
+    /*
+     * 强制模式下不移除行：那条路的语义就是「所有账号都留在列表里」，
+     * 用户要能对照每一行的结果再决定下一步，行消失了反而看不到自己刚跑过什么。
+     */
+    if (forceFree.value) {
+      void accountsStore.checkStatus(row.account.id)
+      return
+    }
 
     /*
      * 已经切走的行要离开列表，但立刻消失会让人看不到结果。
@@ -515,6 +553,19 @@ function startFreeSwitch(): void {
   const count = selectedFreeRows.value.length
   if (!window.confirm(`确认把选中的 ${count} 个账号切换到 Kiro Free？\n\n切换后当前周期仍按原计划计费，下个周期起生效。`)) {
     return
+  }
+  /*
+   * 强制模式每次都要实查一遍，所以把选中行的结果清掉再开跑。
+   * useBatchRun 会跳过 state === 'ok' 的行（那个判断是给「重试失败项」用的），
+   * 不清的话同一个号第二次点就完全不动了，与「强制走一遍」的语义相反。
+   */
+  if (forceFree.value) {
+    for (const row of selectedFreeRows.value) {
+      row.state = 'pending'
+      row.error = undefined
+      row.note = undefined
+      row.removeAt = undefined
+    }
   }
   void startFreeBatch()
 }
@@ -747,19 +798,28 @@ function startFreeSwitch(): void {
           type="warning"
           show-icon
           class="page-alert"
-          message="把勾选账号的订阅切换到 Kiro Free。按 Stripe 规则，当前周期仍按原计划计费，下个周期起生效；已经是 Free、已安排切换或已设置不续费的账号会自动跳过。"
+          message="把勾选账号的订阅切换到 Kiro Free。按 Stripe 规则，当前周期仍按原计划计费，下个周期起生效；已经是 Free、已安排切换或已设置不续费的账号结果会照实标出，不会真的重复提交。"
+          description="默认只列出「非 Free 且没有待生效切换」的账号。勾选「强制」后全部账号都会进入列表：适合本地记录与门户真实状态对不上时纠正（例如记录说切过但其实没生效，或本地仍显示付费档而门户上已是 Free）——每个账号都会向门户实查一次，结果以门户返回为准。"
         />
 
         <div class="list-head">
           <a-checkbox
             :checked="allFreeSelected"
             :indeterminate="freeSelected.size > 0 && !allFreeSelected"
+            :disabled="freeRunning"
             @change="selectAllFree(($event.target as HTMLInputElement).checked)"
           >
             全选
           </a-checkbox>
+          <a-checkbox
+            :checked="forceFree"
+            :disabled="freeRunning"
+            @change="onForceChange(($event.target as HTMLInputElement).checked)"
+          >
+            强制（全部账号）
+          </a-checkbox>
           <span class="count-text">
-            共 {{ freeRows.length }} 个非 Free 账号
+            共 {{ freeRows.length }} 个{{ forceFree ? '' : '非 Free ' }}账号
             <template v-if="freeSelected.size">· 已选 {{ freeSelected.size }}</template>
           </span>
           <span class="spacer" />
@@ -818,7 +878,7 @@ function startFreeSwitch(): void {
           </div>
 
           <div v-if="!freeRows.length" class="empty muted">
-            没有非 Free 的账号
+            {{ forceFree ? '还没有任何账号' : '没有非 Free 的账号' }}
           </div>
         </div>
 

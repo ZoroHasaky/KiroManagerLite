@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.1.1-6c5ce7" alt="version">
+  <img src="https://img.shields.io/badge/version-1.1.2-6c5ce7" alt="version">
   <img src="https://img.shields.io/badge/updated-2026--11--03-2f9e44" alt="updated">
   <img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="license">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="platform">
@@ -58,6 +58,8 @@
 - 查询失败就地显示原始报错并附「关闭 / 重试」，不必关掉重开
 - **批量生成订阅链接**：勾选多个账号后在「批量操作」里选一个订阅档位（用勾选的第一个账号向官方查询可开通档位），为每个账号逐个生成 Stripe 订阅链接；
   已有订阅的账号判为失败，单个失败不影响后续，可中止与重试失败项。生成后每行可用内置浏览器打开或复制，也可下载 txt（`邮箱----订阅链接`）
+- **切换 Free**：勾选账号后批量把订阅降到 Kiro Free。默认只列出「非 Free 且没有待生效切换」的账号；
+  勾选「强制」则全部账号都进列表，每个号向门户实查一次，适合本地记录与门户状态对不上时纠偏
 
 **前往官网**
 
@@ -178,14 +180,14 @@
 
 <p align="center">
   <a href="https://github.com/ZoroHasaky/KiroManagerLite/releases/latest">
-    <img src="https://img.shields.io/badge/⬇%20下载最新版-v1.1.1-6c5ce7?style=for-the-badge" alt="下载最新版">
+    <img src="https://img.shields.io/badge/⬇%20下载最新版-v1.1.2-6c5ce7?style=for-the-badge" alt="下载最新版">
   </a>
   <a href="https://github.com/ZoroHasaky/KiroManagerLite/releases">
     <img src="https://img.shields.io/badge/全部版本-Releases-24292f?style=for-the-badge&logo=github" alt="全部版本">
   </a>
 </p>
 
-**最新版本：v1.1.1**（2026-11-03） · 变更详情见 [CHANGELOG.md](CHANGELOG.md)
+**最新版本：v1.1.2**（2026-11-03） · 变更详情见 [CHANGELOG.md](CHANGELOG.md)
 
 ### 选择对应的安装包
 
@@ -420,7 +422,7 @@ src/
 
 ## 🔖 更新日志
 
-各版本变更记录见 [CHANGELOG.md](CHANGELOG.md)，当前版本 v1.1.1，最后更新于 2026-11-03。
+各版本变更记录见 [CHANGELOG.md](CHANGELOG.md)，当前版本 v1.1.2，最后更新于 2026-11-03。
 
 ---
 
