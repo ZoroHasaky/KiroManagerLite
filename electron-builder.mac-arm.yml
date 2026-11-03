@@ -62,6 +62,20 @@ mac:
   category: public.app-category.developer-tools
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.inherit.plist
+  # 显式做 ad-hoc 签名（identity: "-"）。
+  #
+  # 不写这一行的话，没配证书的构建会「完全跳过签名」：electron-builder 往 .app 里注入
+  # asar、改写 Info.plist 之后，包里原本 Electron 自带的签名就对不上了。Intel 机器上
+  # 这只是「无法验证开发者」，而 Apple Silicon 要求每个可执行文件都有有效签名，
+  # 签名破损会被直接判成「已损坏，无法打开，应将其移到废纸篓」——这正是用户遇到的报错。
+  #
+  # ad-hoc 签名不解决「未公证」，首次打开仍要放行一次；但它让报错回到可放行的
+  # 「无法验证开发者」，用户按提示点「仍要打开」就能用，不必再执行 xattr 命令。
+  #
+  # hardenedRuntime 保持默认的 true：ad-hoc + 加固运行时要求
+  # com.apple.security.cs.disable-library-validation，build/entitlements.mac.plist
+  # 里已有该键（原生模块 cbor-extract 也依赖它），两边是配套的，别单独删其中一边。
+  identity: '-'
   notarize: false
 dmg:
   # 背景图由 scripts/dmg-background.swift 生成（含 @2x），尺寸与下面的 window 一致。

@@ -13,8 +13,8 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.0.40-6c5ce7" alt="version">
-  <img src="https://img.shields.io/badge/updated-2026--10--18-2f9e44" alt="updated">
+  <img src="https://img.shields.io/badge/version-1.1.1-6c5ce7" alt="version">
+  <img src="https://img.shields.io/badge/updated-2026--11--03-2f9e44" alt="updated">
   <img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="license">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="platform">
   <img src="https://img.shields.io/badge/Vue-3-42b883" alt="vue">
@@ -61,12 +61,12 @@
 
 **前往官网**
 
-- 用该账号凭证在应用内的私密窗口直接进 Kiro 官网后台，省去先切号再手动登录
-- 会话分区不持久化、退出即清，也不碰你自己浏览器里的登录身份；每次打开前先清空 cookie，避免显示上一个账号
-- 页面内的跳转全程留在应用内（含站外链接与二级弹窗），不会跳到系统浏览器丢掉会话
-- 自带工具条：后退 / 前进 / 刷新、可跳任意网址的地址栏、加载进度条，以及「更多」菜单（IP 查询、打开百度、复制链接、开发者工具等）；弹出的窗口同样带完整工具条
-- 首屏卡住会自动重试并把进度显示在标题位，次数用尽才给错误页，不再干等 30 秒白屏
-- 请求头伪装成普通 Chrome，并可在设置的「内置浏览器」里指定地区（内置 50 个常用地区，也支持自定义 BCP 47 标签）
+- 用该账号凭证在系统 Chrome（或 Edge）的无痕窗口直接进 Kiro 官网后台，省去先切号再手动登录
+- 每次都是全新的临时 profile：不读也不写你自己浏览器里的登录身份与历史记录，关窗即删；不会出现显示上一个账号的情况
+- 官网跑在原生 Chrome 里（指纹、扩展、证书链都是浏览器自己的），比内置窗口顺畅
+- 找不到 Chrome / Edge 时自动退回内置浏览器，同样注入该账号的 cookie，功能不中断
+- 地区跟着设置的「浏览器地区」走：`--lang` 同时决定页面语言与 `Accept-Language`
+- Stripe 账单 / 结算页仍在应用内的私密窗口打开，不涉及账号身份，这部分保持不变
 
 ### 🔑 API Key 管理
 
@@ -177,15 +177,15 @@
 ## 📥 下载
 
 <p align="center">
-  <a href="https://github.com/lucks-cloud/kiro-manager-lite/releases/latest">
-    <img src="https://img.shields.io/badge/⬇%20下载最新版-v1.0.40-6c5ce7?style=for-the-badge" alt="下载最新版">
+  <a href="https://github.com/ZoroHasaky/KiroManagerLite/releases/latest">
+    <img src="https://img.shields.io/badge/⬇%20下载最新版-v1.1.1-6c5ce7?style=for-the-badge" alt="下载最新版">
   </a>
-  <a href="https://github.com/lucks-cloud/kiro-manager-lite/releases">
+  <a href="https://github.com/ZoroHasaky/KiroManagerLite/releases">
     <img src="https://img.shields.io/badge/全部版本-Releases-24292f?style=for-the-badge&logo=github" alt="全部版本">
   </a>
 </p>
 
-**最新版本：v1.0.40**（2026-10-18） · 变更详情见 [CHANGELOG.md](CHANGELOG.md)
+**最新版本：v1.1.1**（2026-11-03） · 变更详情见 [CHANGELOG.md](CHANGELOG.md)
 
 ### 选择对应的安装包
 
@@ -218,8 +218,8 @@ Windows 与 Linux 暂不提供 arm64 包：原生依赖 `cbor-extract` 没有对
 
 - **Windows**：双击 `.exe` 安装。安装包未做代码签名，SmartScreen 可能提示「已保护你的电脑」，
   确认文件来自官方 Releases 后选「更多信息 → 仍要运行」即可，**不要为此关闭 SmartScreen 或杀毒软件**。
-- **macOS**：拖入「应用程序」。未做公证，首次打开可能提示「已损坏」或「无法验证开发者」，
-  DMG 里附了「安装指南.txt」说明处理办法。
+- **macOS**：拖入「应用程序」。安装包做了 ad-hoc 签名但未公证，首次打开会被拦截一次，
+  按提示在「系统设置 → 隐私与安全性」点「仍要打开」即可；DMG 里附了「安装指南.txt」说明处理办法。
 - **Linux**：AppImage 免安装，`chmod +x` 后直接运行；缺 FUSE 时用 `--appimage-extract-and-run`。
 - **升级**：先完全退出应用（含托盘 / 菜单栏后台进程），再用新包覆盖安装，用户数据不受影响。
   应用内「关于」页也能检查更新。
@@ -363,7 +363,9 @@ src/
     kiroPermissions.ts   自动同意 AI 操作：两套机制读写与还原
     kiroCapability.ts    当前 IDE 版本是否支持自定义网关端点
     kiroProcess.ts       IDE 进程检测、打开、关闭与重启
-    kiroPortal.ts        内置浏览器：私密窗口、工具条、看门狗重试与地区
+    kiroPortal.ts        内置浏览器：私密窗口、工具条、看门狗重试与地区（含官网兜底）
+    portalAuth.ts        门户会话身份：cookie 组装与 profileArn 补齐（两个浏览器通道共用）
+    externalPortal.ts    前往官网：外部 Chrome 无痕窗口 + CDP 注入账号 cookie
     ── API Key 网关
     keyService.ts        Key 管理与网关编排
     keyGateway.ts        本地 KRS / CPS 转发
@@ -418,7 +420,7 @@ src/
 
 ## 🔖 更新日志
 
-各版本变更记录见 [CHANGELOG.md](CHANGELOG.md)，当前版本 v1.0.40，最后更新于 2026-10-18。
+各版本变更记录见 [CHANGELOG.md](CHANGELOG.md)，当前版本 v1.1.1，最后更新于 2026-11-03。
 
 ---
 

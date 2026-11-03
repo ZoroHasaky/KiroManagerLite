@@ -20,7 +20,8 @@ import {
   verifyCredentials
 } from './accountService'
 import { createAccountApiKey, deleteAccountApiKey, listAccountApiKeys } from './kiroApiKey'
-import { openAccountPortal, openInAppUrl } from './kiroPortal'
+import { openInAppUrl } from './kiroPortal'
+import { openAccountPortal } from './externalPortal'
 import { createSubscriptionCheckout, getSubscriptionEntry, listSubscriptionPlans } from './kiroSubscription'
 import {
   closePaymentSession,

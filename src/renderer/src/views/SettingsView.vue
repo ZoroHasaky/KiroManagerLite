@@ -682,9 +682,9 @@ function resetAll(): void {
         </a-form-item>
       </a-form>
       <ul class="tips">
-        <li>作用于应用内打开的所有网页（含「前往官网」及其弹出的窗口），决定 Accept-Language 与页面区域，影响显示的语言与价格币种。</li>
+        <li>作用于应用内打开的网页，以及「前往官网」拉起的外部 Chrome；决定 Accept-Language 与页面区域，影响显示的语言与价格币种。</li>
         <li>下拉支持搜索，可按地区名或语言标签筛选；选「自定义」后可填任意 BCP 47 标签。</li>
-        <li>Accept-Language 保存后立即生效；页面内 navigator.language 由 Chromium 启动参数决定，需重启应用。</li>
+        <li>外部 Chrome 每次打开都是新启动，改完下次点开即生效；应用内网页的 navigator.language 由启动参数决定，需重启应用。</li>
         <li>不改变本应用自身的界面语言，也不影响账号所属的 AWS 区域。</li>
       </ul>
     </a-card>

@@ -119,7 +119,7 @@ const credentialFields = computed(() => {
   ]
 })
 
-/** 用该账号凭证在私密窗口打开官网后台 */
+/** 用该账号凭证在外部 Chrome 的无痕窗口打开官网后台 */
 async function openPortal(): Promise<void> {
   const target = account.value
   if (!target) return
@@ -166,7 +166,7 @@ async function act(kind: 'refresh' | 'check' | 'switch'): Promise<void> {
         <a-button type="primary" :loading="busy" @click="act('switch')">切换到此账号</a-button>
         <a-button :loading="busy" @click="act('refresh')">刷新密钥</a-button>
         <a-button :loading="busy" @click="act('check')">刷新用量</a-button>
-        <a-tooltip title="用该账号凭证在私密窗口登录 Kiro 官网后台">
+        <a-tooltip title="用该账号凭证在 Chrome 无痕窗口登录 Kiro 官网后台">
           <a-button :loading="portalOpening" @click="openPortal">
             <template #icon><GlobalOutlined /></template>
             前往官网

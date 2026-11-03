@@ -131,10 +131,10 @@
 
 | 接口 | 作用 | 调用位置 |
 | --- | --- | --- |
-| `https://app.kiro.dev`（内置浏览器） | 以账号身份打开官网后台 | `kiroPortal.ts` |
+| `https://app.kiro.dev`（外部 Chrome 无痕窗口） | 以账号身份打开官网后台 | `externalPortal.ts` |
 | 任意 http(s) 链接（内置浏览器） | 打开 Stripe 账单页、支付页 | `kiroPortal.ts` |
 
-打开官网时注入四个 cookie：`Idp`、`AccessToken`、`RefreshToken`、`ProfileArn`。缺 `ProfileArn` 时 Enterprise 账号会停在登录页（`user-status: stale`）。
+打开官网时注入四个 cookie：`Idp`、`AccessToken`、`RefreshToken`、`ProfileArn`。缺 `ProfileArn` 时 Enterprise 账号会停在登录页（`user-status: stale`）。cookie 的组装规则在 `portalAuth.ts`，找不到 Chrome 时的内置浏览器兜底与外部 Chrome 共用同一份。
 
 ---
 

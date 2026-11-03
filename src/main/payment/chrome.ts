@@ -113,6 +113,20 @@ export interface LaunchOptions {
    * 生产调用方传 app.getPath('userData') 下的子目录。
    */
   cacheDir?: string
+  /**
+   * 用无痕窗口打开。
+   *
+   * 临时 profile 关窗即删，本身已经不落痕迹；再加 --incognito 是为了让用户一眼
+   * 看出「这个窗口不碰自己的浏览记录」，并且缓存、下载都只留在内存里。
+   * 无痕模式有自己的内存缓存，`--disk-cache-dir` 对它不生效。
+   */
+  incognito?: boolean
+  /**
+   * Chromium 界面语言（BCP 47），对应 `--lang`。
+   * 只影响 navigator.language 与页面内按浏览器语言的自适应，
+   * Accept-Language 请求头另外由 CDP 设置。
+   */
+  lang?: string
 }
 
 /** 一个正在运行的浏览器实例 */
@@ -128,6 +142,12 @@ export interface BrowserInstance {
   /** 浏览器进程是否已经退出（不一定等于用户关窗，见下方 exit 监听） */
   processExited: boolean
   close(): Promise<void>
+  /**
+   * 同步杀掉浏览器进程。
+   * 退出路径专用：will-quit 里等不了异步清理，而 Chrome 是 detached: false 的子进程，
+   * 父进程退出并不会连带把它收掉，不在这里杀就会留下一个孤儿窗口。
+   */
+  killSync(): void
 }
 
 function killTree(pid: number): void {
@@ -243,6 +263,8 @@ export async function launchBrowser(options: LaunchOptions = {}): Promise<Browse
     ...(cacheDir ? [`--disk-cache-dir=${cacheDir}`, '--disk-cache-size=268435456'] : []),
     '--no-first-run',
     '--no-default-browser-check',
+    ...(options.incognito ? ['--incognito'] : []),
+    ...(options.lang ? [`--lang=${options.lang}`] : []),
     /*
      * --test-type 有两个作用：
      *  1. 压掉 Chrome 顶部那行「您使用的是不受支持的命令行标记」提示条。
@@ -289,7 +311,10 @@ export async function launchBrowser(options: LaunchOptions = {}): Promise<Browse
     targetId: '',
     closedByUser: false,
     processExited: false,
-    close: async () => undefined
+    close: async () => undefined,
+    killSync: () => {
+      if (pid) killTree(pid)
+    }
   }
 
   const cleanupDir = async (): Promise<void> => {

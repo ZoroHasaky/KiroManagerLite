@@ -1,15 +1,15 @@
 # 安装说明与常见问题
 
 本文适用于 Kiro Manager Lite 的安装、升级和卸载。请仅从项目的
-[GitHub Releases](https://github.com/lucks-cloud/kiro-manager-lite/releases) 下载文件，
+[GitHub Releases](https://github.com/ZoroHasaky/KiroManagerLite/releases) 下载文件，
 不要运行来源不明的二次打包版本。
 
 ## 选择安装包
 
 | 平台 | 应下载的文件 | 适用设备 |
 | --- | --- | --- |
-| macOS Apple Silicon | `*-mac-arm64.pkg`（推荐）或 `*-mac-arm64.dmg` | Apple M 系列芯片 |
-| macOS Intel | `*-mac-x64.pkg`（推荐）或 `*-mac-x64.dmg` | Intel 芯片 |
+| macOS Apple Silicon | `*-mac-arm64.dmg` | Apple M 系列芯片 |
+| macOS Intel | `*-mac-x64.dmg` | Intel 芯片 |
 | Windows | `*-win-x64-setup.exe` | 64 位 Windows |
 | Linux | `*-linux-x86_64.AppImage` | 64 位 x86 Linux |
 
@@ -30,23 +30,28 @@ Releases 页面，再选择“更多信息”→“仍要运行”。不要为�
 
 先在“苹果菜单”→“关于本机”查看芯片：Apple M 系列下载 `arm64`，Intel 芯片下载 `x64`。
 
-### 推荐：使用 .pkg 安装包
+### 安装步骤
 
-1. 下载 `*-mac-<芯片>.pkg` 并双击，按系统“安装器”的向导完成安装，应用会装进“应用程序”文件夹。
-2. 首次双击若提示“无法验证开发者”，前往“系统设置”→“隐私与安全性”，在页面下方点击“仍要打开”，
-   再按向导安装。这一步只在安装时需要一次。
-3. 通过安装器装上的应用不带下载隔离属性，打开时不会再提示“已损坏”；安装后脚本还会再清理一次，
-   覆盖此前用 DMG 装过的版本也一样。
+1. 下载 `*-mac-<芯片>.dmg` 并双击打开。
+2. 把左侧的 Kiro Manager Lite 拖进右侧的“应用程序”文件夹。
+3. 从“启动台”或“应用程序”文件夹启动 Kiro Manager Lite。
 
-### 使用 DMG
+### 首次打开的拦截提示
 
-打开 DMG 后，将 Kiro Manager Lite 拖入“应用程序”文件夹。
+安装包做了 ad-hoc 签名，但没有 Apple 开发者证书，也没有公证，所以首次打开仍会被 Gatekeeper 拦一次。
+这是正常现象，不是安装失败。
 
-当前安装包未做 Apple 签名与公证。首次打开若提示“无法验证开发者”，可在 Finder 的“应用程序”中
-按住 `Control` 点击应用，选择“打开”，然后再次确认；也可前往“系统设置”→“隐私与安全性”允许本次打开。
+若提示“无法验证开发者”或“来自身份不明的开发者”，放行即可：
 
-若提示应用“已损坏，无法打开”，最省事的办法是改用同版本的 `.pkg` 覆盖安装一次（数据保留）；
-也可以先确认安装包来自官方 Releases，再关闭应用并执行：
+- **方法 A（推荐）**：在“应用程序”里按住 `Control` 点击应用 → “打开” → 在确认框里再点“打开”。
+- **方法 B**：直接双击，出现拦截提示后打开“系统设置” → “隐私与安全性”，在页面下方点“仍要打开”。
+
+放行过一次之后就能正常双击启动。
+
+### 如果仍然提示“已损坏，无法打开”
+
+正常情况下不会再出现这个提示（ad-hoc 签名已修掉签名破损导致的误报）。若仍遇到，说明下载过程
+破坏了文件，或装的是旧版本：先确认文件来自官方 Releases，重新下载一次；再不行就执行：
 
 ```bash
 xattr -cr "/Applications/Kiro Manager Lite.app"
@@ -137,7 +142,7 @@ Kiro IDE。
 
 检查更新需要访问 GitHub Releases。请确认网络可访问 GitHub；如需代理，在应用设置中配置 HTTP
 代理。也可以直接打开
-[Releases](https://github.com/lucks-cloud/kiro-manager-lite/releases) 手动下载。
+[Releases](https://github.com/ZoroHasaky/KiroManagerLite/releases) 手动下载。
 
 ### 关闭窗口后应用仍在运行
 

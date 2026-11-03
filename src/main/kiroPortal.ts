@@ -1,8 +1,8 @@
-// 用指定账号的凭证打开 Kiro 官网后台（带工具条的内置浏览器）
+// 应用内浏览器：用带工具条的窗口承载站外链接（Stripe 账单 / 结算页等），
+// 同时作为「找不到 Chrome/Edge」时打开官网后台的兜底。
 //
-// 为什么不用系统浏览器的无痕窗口：那条路（browser.ts 的 openUrl）没法把凭证塞进去，
-// 打开只会停在登录页。这里用应用内的一次性会话分区，把账号 cookie 注入后再加载页面，
-// 于是「用该账号身份进入后台」和「不碰用户自己的浏览器身份」两件事同时成立。
+// 默认路径不走这里：账号的「前往 Kiro.dev 官网」由 externalPortal.ts 拉起外部 Chrome
+// 的一次性无痕 profile 完成——官网是重前端，内置窗口的手感明显不如原生 Chrome。
 //
 // 窗口结构：
 //   BaseWindow
@@ -24,10 +24,8 @@ import {
 } from 'electron'
 import { join } from 'path'
 import { acceptLanguageFor } from '../shared/portalLocale'
-import { listAvailableProfiles } from './kiroApi'
+import { PORTAL_ORIGIN, portalCookies, resolvePortalArn } from './portalAuth'
 import type { Account } from '../shared/types'
-
-const PORTAL_ORIGIN = 'https://app.kiro.dev'
 
 /**
  * 私密会话：分区名不带 persist: 前缀，Electron 就只在内存里保存，
@@ -217,12 +215,7 @@ const bars = new Map<
   }
 >()
 
-/** 复用同一个官网主窗口：换账号只重写 cookie 再重新加载，不另开窗口 */
-let portalWindow: BaseWindow | null = null
-/** 主窗口的带看门狗加载入口，换账号时用它重新进入首页 */
-let portalLoad: ((url: string) => void) | null = null
-
-/** 本会话开出来的全部窗口（主窗口 + 弹窗），退出时统一收掉 */
+/** 本会话开出来的全部窗口，退出时统一收掉 */
 const openedWindows = new Set<BaseWindow>()
 
 /**
@@ -881,47 +874,6 @@ function barHtml(padLeft: number): string {
 }
 
 /**
- * 门户认的会话 cookie。
- *
- * Idp / AccessToken / RefreshToken 三个是社交与 Builder ID 账号进后台的充分条件。
- * Enterprise（IdC / SSO）账号还必须带 ProfileArn，否则门户把会话判为 stale、停在登录页
- * —— 实测同一 token 补上该 cookie，user-status 立刻从 stale 变 active、user-id 也出现。
- * 对其它登录方式带上它无副作用（本就 active，加了仍 active），因此只要账号有 ARN 就一并注入。
- */
-function portalCookies(account: Account, profileArn: string): { name: string; value: string }[] {
-  const { accessToken, refreshToken } = account.credentials
-  return [
-    { name: 'Idp', value: account.idp },
-    { name: 'AccessToken', value: accessToken },
-    { name: 'RefreshToken', value: refreshToken },
-    { name: 'ProfileArn', value: profileArn }
-  ].filter((item) => !!item.value)
-}
-
-/**
- * 定出注入 cookie 用的 profileArn。
- *
- * 优先用账号已存的值。仅当 Enterprise 账号一次都没存过 ARN 时，才现场问一次
- * ListAvailableProfiles 补齐——否则这类账号打开官网只会停在登录页（stale）。
- * 失败或非 Enterprise 一律返回空串，即不注入 ProfileArn cookie。
- */
-async function resolvePortalArn(account: Account): Promise<string> {
-  const stored = account.profileArn || account.credentials.profileArn
-  if (stored) return stored
-  if (account.idp !== 'Enterprise') return ''
-
-  const { accessToken, region } = account.credentials
-  if (!accessToken) return ''
-  try {
-    const [arn] = await listAvailableProfiles(accessToken, region)
-    if (arn) console.info('[KiroPortal] Enterprise 账号缺 profileArn，已现查补齐')
-    return arn || ''
-  } catch {
-    return ''
-  }
-}
-
-/**
  * 建一个带工具条的浏览器窗口（主窗口与弹窗共用同一套外壳）。
  * 返回 load()：带看门狗重试的导航入口，调用方拿它去加载首个地址。
  */
@@ -982,11 +934,6 @@ function createBrowserShell(title: string): { win: BaseWindow; load: (url: strin
     for (const view of [bar, content]) {
       if (!view.webContents.isDestroyed()) view.webContents.close()
     }
-    // 只有主窗口才需要清掉这两个引用，弹窗本来就不占用它们
-    if (portalWindow === win) {
-      portalWindow = null
-      portalLoad = null
-    }
   })
 
   keepNavigationInApp(content.webContents)
@@ -1024,18 +971,34 @@ function createBrowserShell(title: string): { win: BaseWindow; load: (url: strin
 }
 
 /**
- * 打开官网后台并以该账号身份登录。
- * 已有窗口时复用：换账号只需重写 cookie，不必再开一个窗口。
+ * 用内置浏览器打开任意 http(s) 链接（Stripe 账单 / 结算页走这条）。
+ *
+ * 每次都新开一个窗口：支付流程被别的操作顶掉就得从头来，
+ * 而且用户往往需要一边看账号列表一边付款。
+ * 共用同一个私密分区，这些链接本身已把凭据编码在 URL 里，不再需要额外注入 cookie。
  */
-export async function openAccountPortal(account: Account): Promise<{ url: string }> {
-  const { accessToken, refreshToken } = account.credentials
-  if (!accessToken && !refreshToken) throw new Error('账号缺少凭证，无法登录官网')
+export function openInAppUrl(url: string, title = 'Kiro'): { url: string } {
+  if (!/^https?:\/\//i.test(url)) throw new Error('只支持 http(s) 链接')
+  preparePortalSession()
+  const shellWindow = createBrowserShell(title)
+  shellWindow.load(url)
+  shellWindow.win.focus()
+  return { url }
+}
 
+/**
+ * 内置浏览器版的「该账号身份打开官网后台」。
+ *
+ * 只在系统里找不到 Chrome/Edge 时兜底：外部浏览器是默认路径（原生指纹、原生性能），
+ * 内置窗口做不到那些，但至少点开就能进后台，不用先让用户去装浏览器。
+ */
+export async function openAccountPortalInApp(
+  account: Account
+): Promise<{ url: string; browser: string }> {
   const profileArn = await resolvePortalArn(account)
-
   const ses = preparePortalSession()
   /*
-   * 每次都先清空：残留的旧账号 cookie 会让门户继续按上一个身份渲染，
+   * 每次先清空：残留的旧账号 cookie 会让门户继续按上一个身份渲染，
    * 表现就是「点了 A 账号却进了 B 账号的后台」。
    */
   await ses.clearStorageData({ storages: ['cookies'] })
@@ -1053,50 +1016,20 @@ export async function openAccountPortal(account: Account): Promise<{ url: string
     })
   }
 
-  if (!portalWindow || portalWindow.isDestroyed()) {
-    const shellWindow = createBrowserShell(`Kiro 官网 - ${account.email}`)
-    portalWindow = shellWindow.win
-    portalLoad = shellWindow.load
-  }
-
-  const win = portalWindow
-  if (!win) throw new Error('无法创建官网窗口')
-  win.setTitle(`Kiro 官网 - ${account.email}`)
-
+  const shellWindow = createBrowserShell(`Kiro 官网 - ${account.email}`)
   // 走带看门狗重试的通道，而不是裸 loadURL：首屏挂住时能自动重来
-  portalLoad?.(PORTAL_ORIGIN)
-
-  if (win.isMinimized()) win.restore()
-  win.focus()
-  console.info(`[KiroPortal] 已以 ${account.email} 的身份打开官网后台`)
-  return { url: PORTAL_ORIGIN }
-}
-
-/**
- * 用内置浏览器打开任意 http(s) 链接（Stripe 账单 / 结算页走这条）。
- *
- * 每次都新开一个窗口而不复用官网主窗口：支付流程被别的操作顶掉就得从头来，
- * 而且用户往往需要一边看账号列表一边付款。
- * 共用同一个私密分区，于是站点身份与「用该账号打开的官网」保持一致，
- * 这些链接本身已把凭据编码在 URL 里，不再需要额外注入 cookie。
- */
-export function openInAppUrl(url: string, title = 'Kiro'): { url: string } {
-  if (!/^https?:\/\//i.test(url)) throw new Error('只支持 http(s) 链接')
-  preparePortalSession()
-  const shellWindow = createBrowserShell(title)
-  shellWindow.load(url)
+  shellWindow.load(PORTAL_ORIGIN)
   shellWindow.win.focus()
-  return { url }
+  console.info(`[KiroPortal] 已以 ${account.email} 的身份在内置浏览器打开官网后台`)
+  return { url: PORTAL_ORIGIN, browser: '应用内浏览器' }
 }
 
-/** 应用退出时收掉全部窗口（主窗口 + 弹窗），避免残留窗口挡住退出流程 */
+/** 应用退出时收掉全部窗口，避免残留窗口挡住退出流程 */
 export function closePortalWindow(): void {
   for (const win of [...openedWindows]) {
     if (!win.isDestroyed()) win.close()
   }
   openedWindows.clear()
-  portalWindow = null
-  portalLoad = null
 }
 
 bindBarActions()

@@ -163,6 +163,34 @@ jobs:
       - name: 打包
         run: npm run ${{ matrix.script }} -- --publish never
 
+      # 只在 macOS runner 上能跑：校验 .app 的签名是否真的落到了产物里。
+      #
+      # 之前没配 identity 时 electron-builder 会「完全跳过签名」，而它注入 asar、
+      # 改写 Info.plist 之后，包里 Electron 自带的签名必然失效。Intel 上表现为
+      # 「无法验证开发者」，Apple Silicon 上直接报「已损坏，无法打开」。
+      # codesign --verify 对未签名或签名破损的包会非零退出，让发布在构建阶段就失败，
+      # 而不是等用户装完才发现。
+      - name: 校验 macOS 签名完整性
+        if: runner.os == 'macOS'
+        run: |
+          app="$(find dist -maxdepth 2 -name '*.app' -type d | head -n1)"
+          if [ -z "$app" ]; then
+            echo "::error::dist 下没有找到 .app，无法校验签名"
+            exit 1
+          fi
+          echo "校验 $app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          # 打印实际签名信息便于排查：没配证书时应当是 ad-hoc（Signature=adhoc）
+          codesign -dv --verbose=4 "$app" 2>&1 | tee /tmp/codesign.txt
+          if grep -q 'Signature=adhoc' /tmp/codesign.txt; then
+            echo "签名类型：ad-hoc（未使用开发者证书，符合当前发布方式）"
+          elif grep -q 'Authority=Developer ID Application' /tmp/codesign.txt; then
+            echo "签名类型：Developer ID 正式签名"
+          else
+            echo "::error::签名类型不在预期范围内，请检查 mac.identity 配置"
+            exit 1
+          fi
+
       - uses: actions/upload-artifact@v4
         with:
           name: dist-${{ matrix.os }}

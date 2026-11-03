@@ -404,7 +404,7 @@ async function refreshUsage(account: Account): Promise<void> {
   })
 }
 
-/** 用该账号凭证在私密窗口打开官网后台，与详情抽屉走同一个通道 */
+/** 用该账号凭证在外部 Chrome 的无痕窗口打开官网后台，与详情抽屉走同一个通道 */
 async function openPortal(account: Account): Promise<void> {
   await withBusy(account.id, 'portal', async () => {
     const res = await window.api.openAccountPortal(toPlain(account))

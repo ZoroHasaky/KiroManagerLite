@@ -1448,9 +1448,9 @@ export interface AppSettings {
   /** 两次尝试之间的固定间隔（ms） */
   gatewayRetryDelayMs: number
   /**
-   * 内置浏览器（前往官网）访问 Kiro 网页端时使用的地区。
+   * 访问 Kiro 网页端时使用的地区（应用内网页与「前往官网」拉起的外部 Chrome 共用）。
    *
-   * 同时决定 Accept-Language 请求头与 Chromium 的界面区域，
+   * 同时决定 Accept-Language 请求头与浏览器界面区域，
    * 后者影响页面里 navigator.language 读到的值——门户按前端语言判断时只有它管用。
    */
   portalLocale: PortalLocale

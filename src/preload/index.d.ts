@@ -160,8 +160,8 @@ export interface Api {
     account: Account,
     keyId: string
   ) => Promise<IpcResult<DeleteApiKeyResult>>
-  /** 用该账号凭证在私密窗口打开 Kiro 官网后台 */
-  openAccountPortal: (account: Account) => Promise<IpcResult<{ url: string }>>
+  /** 用该账号凭证在系统 Chrome 的无痕窗口打开 Kiro 官网后台 */
+  openAccountPortal: (account: Account) => Promise<IpcResult<{ url: string; browser: string }>>
   /** 查订阅入口：已订阅返回 Stripe 账单管理链接，未订阅返回可开通档位 */
   getSubscriptionEntry: (account: Account) => Promise<IpcResult<SubscriptionEntry>>
   /** 为指定档位生成 Stripe 结算链接；rejectSubscribed 为真时已订阅的账号直接报错 */

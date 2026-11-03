@@ -47,7 +47,7 @@ const api = {
   /** 删除该账号的一个 API Key */
   deleteAccountApiKey: (account: unknown, keyId: string) =>
     invoke('accounts:delete-api-key', account, keyId),
-  /** 用该账号凭证在私密窗口打开 Kiro 官网后台 */
+  /** 用该账号凭证在系统 Chrome 的无痕窗口打开 Kiro 官网后台 */
   openAccountPortal: (account: unknown) => invoke('accounts:open-portal', account),
 
   /** 查订阅入口：已订阅返回账单管理链接，未订阅返回可开通档位 */
