@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.1.2-6c5ce7" alt="version">
+  <img src="https://img.shields.io/badge/version-1.1.3-6c5ce7" alt="version">
   <img src="https://img.shields.io/badge/updated-2026--11--03-2f9e44" alt="updated">
   <img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="license">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="platform">
@@ -180,14 +180,14 @@
 
 <p align="center">
   <a href="https://github.com/ZoroHasaky/KiroManagerLite/releases/latest">
-    <img src="https://img.shields.io/badge/⬇%20下载最新版-v1.1.2-6c5ce7?style=for-the-badge" alt="下载最新版">
+    <img src="https://img.shields.io/badge/⬇%20下载最新版-v1.1.3-6c5ce7?style=for-the-badge" alt="下载最新版">
   </a>
   <a href="https://github.com/ZoroHasaky/KiroManagerLite/releases">
     <img src="https://img.shields.io/badge/全部版本-Releases-24292f?style=for-the-badge&logo=github" alt="全部版本">
   </a>
 </p>
 
-**最新版本：v1.1.2**（2026-11-03） · 变更详情见 [CHANGELOG.md](CHANGELOG.md)
+**最新版本：v1.1.3**（2026-11-03） · 变更详情见 [CHANGELOG.md](CHANGELOG.md)
 
 ### 选择对应的安装包
 
@@ -422,7 +422,7 @@ src/
 
 ## 🔖 更新日志
 
-各版本变更记录见 [CHANGELOG.md](CHANGELOG.md)，当前版本 v1.1.2，最后更新于 2026-11-03。
+各版本变更记录见 [CHANGELOG.md](CHANGELOG.md)，当前版本 v1.1.3，最后更新于 2026-11-03。
 
 ---
 

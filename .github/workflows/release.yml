@@ -120,8 +120,12 @@ jobs:
               dist/*.blockmap
               dist/latest.yml
           # macOS arm64（Apple Silicon）。只出 dmg + zip，不产 pkg。
+          #
+          # 不用 macos-latest：它指向 macOS 26 Arm64，容量最紧张，实测排队 15 分钟后
+          # 直接被取消（"was not acquired by Runner of type hosted"）。macos-15 同样是
+          # arm64，排队明显短。目标只是打 arm64 包，具体是哪个 macOS 大版本无所谓。
           - label: macOS arm64
-            os: macos-latest
+            os: macos-15
             script: build:mac:arm
             artifacts: |
               dist/*.dmg
@@ -201,21 +205,50 @@ jobs:
   release:
     name: 发布 Release
     needs: [detect, build]
-    if: needs.detect.outputs.release == 'true'
+    # 只要这次要发布，就尝试发布，不要求所有平台都成功。
+    #
+    # 默认语义是「依赖任一失败就跳过」，那会让「macOS runner 排队超时被取消、但 Windows
+    # 已经打好包」的情况变成整个版本发不出去。macOS 的 arm64 runner 容量紧张时很常见。
+    # !cancelled() 让本 job 在依赖失败后仍然运行（真正被取消时不跑，免得产出半截版本），
+    # 具体缺哪些平台在下面的步骤里判断并写进发布说明。
+    if: ${{ !cancelled() && needs.detect.outputs.release == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
 
+      # 没有产物时这个 action 会直接失败，但报错是「Unable to find any artifacts」，
+      # 看不出真正原因是某个平台的 runner 没抢到机器。先容错，下一步自己判断并给出清晰原因。
       - uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           path: artifacts
           merge-multiple: true
 
+      - name: 检查产物
+        id: check
+        run: |
+          echo "构建结果：${{ needs.build.result }}"
+          # 只有文件才算数：download-artifact 可能留下空目录
+          files="$(find artifacts -type f 2>/dev/null || true)"
+          if [ -z "$files" ]; then
+            echo "::error::没有任何平台打包成功（构建结果：${{ needs.build.result }}），不发布空版本"
+            exit 1
+          fi
+          has_win=false; has_mac=false
+          printf '%s\n' "$files" | grep -q '\.exe$' && has_win=true || true
+          printf '%s\n' "$files" | grep -q '\.dmg$' && has_mac=true || true
+          echo "win=$has_win" >> "$GITHUB_OUTPUT"
+          echo "mac=$has_mac" >> "$GITHUB_OUTPUT"
+          echo "Windows：$has_win，macOS：$has_mac"
+          printf '%s\n' "$files"
+
       - name: 生成发布说明
         env:
           VERSION: ${{ needs.detect.outputs.version }}
+          HAS_WIN: ${{ steps.check.outputs.win }}
+          HAS_MAC: ${{ steps.check.outputs.mac }}
         run: |
           version="$VERSION"
           # 只取 CHANGELOG 里当前版本那一段，避免把历史日志全塞进说明。
@@ -231,23 +264,38 @@ jobs:
           if [ ! -s NOTES.md ]; then
             echo "本次发布未在 CHANGELOG.md 中找到 $version 的条目。" > NOTES.md
           fi
-          cat >> NOTES.md <<'EOF'
 
-          ## 📦 下载
-
-          | 平台 | 文件 |
-          | --- | --- |
-          | Windows (x64) | `*-win-x64-setup.exe` |
-          | macOS (Apple Silicon) | `*-mac-arm64.dmg` |
-
-          macOS 安装包已做 ad-hoc 签名，但未使用 Apple 开发者证书、也未公证，首次打开仍会被
-          Gatekeeper 拦截一次：在「系统设置 - 隐私与安全性」点「仍要打开」，或在「应用程序」里
-          按住 Control 点击应用后选「打开」。放行一次之后即可正常双击启动。
-
-          ---
-
-          > 安装遇到问题？请查看 [安装说明与常见问题](https://github.com/ZoroHasaky/KiroManagerLite/blob/main/INSTALL.md)。
-          EOF
+          # 下载表按实际产出的平台生成：某个平台的 runner 没抢到机器时，
+          # 不该在说明里承诺一个并不存在的安装包。
+          {
+            echo ''
+            echo '## 📦 下载'
+            echo ''
+            echo '| 平台 | 文件 |'
+            echo '| --- | --- |'
+            [ "$HAS_WIN" = "true" ] && echo '| Windows (x64) | `*-win-x64-setup.exe` |'
+            [ "$HAS_MAC" = "true" ] && echo '| macOS (Apple Silicon) | `*-mac-arm64.dmg` |'
+            echo ''
+            if [ "$HAS_MAC" != "true" ]; then
+              echo '> ⚠️ 本次 macOS 安装包未随版本发布（构建机的 macOS runner 未分配成功），'
+              echo '> 需要 macOS 包的请等下次发布，或在该版本对应的 Actions 运行里重跑 macOS 任务。'
+              echo ''
+            fi
+            if [ "$HAS_WIN" != "true" ]; then
+              echo '> ⚠️ 本次 Windows 安装包未随版本发布。'
+              echo ''
+            fi
+            if [ "$HAS_MAC" = "true" ]; then
+              echo 'macOS 安装包已做 ad-hoc 签名，但未使用 Apple 开发者证书、也未公证，首次打开仍会被'
+              echo 'Gatekeeper 拦截一次：在「系统设置 - 隐私与安全性」点「仍要打开」，或在「应用程序」里'
+              echo '按住 Control 点击应用后选「打开」。放行一次之后即可正常双击启动。'
+              echo ''
+            fi
+            echo '---'
+            echo ''
+            echo '> 安装遇到问题？请查看 [安装说明与常见问题](https://github.com/ZoroHasaky/KiroManagerLite/blob/main/INSTALL.md)。'
+          } >> NOTES.md
+          cat NOTES.md
 
       - name: 删除同版本旧 Release
         uses: actions/github-script@v7
