@@ -53,8 +53,11 @@ function portalHeaders(
 /**
  * 用账号凭证向 Kiro 要一个 Stripe 门户链接。
  * 不带 subscriptionType 时拿到的是「管理订阅」门户，不是某个档位的结算页。
+ *
+ * 「打开订阅门户（无痕）」也走这里：那条路只要链接，不要门户里的订阅数据。
+ * 门户会话是短时效凭证，取到就得马上打开，不能缓存。
  */
-async function fetchManagementUrl(account: Account): Promise<string> {
+export async function fetchManagementUrl(account: Account): Promise<string> {
   const { accessToken } = account.credentials
   if (!accessToken) throw new Error('账号缺少 AccessToken')
 
@@ -62,7 +65,8 @@ async function fetchManagementUrl(account: Account): Promise<string> {
     clientToken: awsInvocationId(),
     provider: 'STRIPE'
   }
-  if (account.profileArn) body.profileArn = account.profileArn
+  const profileArn = account.profileArn || account.credentials.profileArn
+  if (profileArn) body.profileArn = profileArn
 
   const res = await httpRequest(`${qEndpoint(account.credentials.region)}/CreateSubscriptionToken`, {
     method: 'POST',

@@ -14,7 +14,7 @@ import {
   LogoutOutlined,
   ProfileOutlined,
   SyncOutlined,
-  ThunderboltOutlined
+  WalletOutlined
 } from '@ant-design/icons-vue'
 import { useSettingsStore } from '@/stores/settings'
 import {
@@ -70,11 +70,10 @@ const emit = defineEmits<{
   'refresh-key': [account: Account]
   'refresh-usage': [account: Account]
   'copy-token': [account: Account]
-  test: [account: Account]
-  /** 用该账号凭证生成一个新的 Kiro API Key */
-  'create-api-key': [account: Account]
   /** 用该账号凭证打开官网后台 */
   portal: [account: Account]
+  /** 用该账号的 Stripe 管理门户链接，在无痕浏览器里取消 / 管理订阅 */
+  'subscription-portal': [account: Account]
   /** 点订阅标签：管理订阅或开通订阅 */
   subscription: [account: Account]
   /** 点「待支付」阶段标签：打开应用内支付弹窗 */
@@ -201,9 +200,8 @@ type ActionKey =
   | 'refresh-key'
   | 'refresh-usage'
   | 'copy-token'
-  | 'test'
-  | 'create-api-key'
   | 'portal'
+  | 'subscription-portal'
   | 'info'
   | 'edit'
   | 'remove'
@@ -254,9 +252,13 @@ const actions = computed<CardAction[]>(() => [
     ]
   },
   { id: 'copy-token', action: 'copy-token', title: '复制凭证 JSON', icon: CopyOutlined },
-  { id: 'test', action: 'test', title: '测活（发一次真实对话）', icon: ThunderboltOutlined },
-  { id: 'create-api-key', action: 'create-api-key', title: 'API Key 管理', icon: KeyOutlined },
   { id: 'portal', action: 'portal', title: '前往Kiro.dev官网', icon: GlobalOutlined },
+  {
+    id: 'subscription-portal',
+    action: 'subscription-portal',
+    title: '打开订阅门户（无痕）',
+    icon: WalletOutlined
+  },
   { id: 'edit', action: 'edit', title: '编辑', icon: EditOutlined },
   { id: 'remove', action: 'remove', title: '删除', icon: DeleteOutlined, danger: true }
 ])
@@ -954,7 +956,7 @@ function onCardClick(): void {
    * 邮箱 | 标签(吃掉富余) | 用量 | 功能区
    * 邮箱列定死 400px：富余宽度没用完时它不该跟着缩，否则窗口一变窄邮箱先被截。
    * 富余全部落在标签那一列（1fr），标签本身左对齐，多出来的宽度就是留白。
-   * 功能区定死 350px：10 个 24px 按钮 + Token 文案，少一点按钮就会换行。
+   * 功能区定死 350px：8 个 24px 按钮 + Token 文案，少一点按钮就会换行。
    */
   grid-template-columns: 400px minmax(190px, 1fr) 350px 350px;
   align-items: center;
@@ -1018,14 +1020,14 @@ function onCardClick(): void {
 }
 
 /*
- * 再窄一档（内容 1154 = 400 + 350 + 350 + 三道间距 54）：功能区掉到第二行。
+ * 再窄一档（内容 1154 = 400 + 0 + 350 + 350 + 三道间距 54）：功能区掉到第二行。
  * 右侧那一列变成「用量在上、按钮在下」—— 用量是要读的数据，
  * 按钮是操作，读的东西放上面更顺；标签铺在邮箱 + 富余那两列下面。
  *
  * 邮箱列写成 minmax(0, 400px) 而不是硬 400：宽度够时和上面两档一样是 400，
- * 不够时才让它让步。写死 400 的话，这一档的下限会顶到单元格 816px，
+ * 不够时才让它让步。写死 400 的话，这一档要求的最小单元格宽度会明显变大，
  * 而最窄窗口（940，单元格约 734px）就会掉进最后那个竖排兜底档。
- * 右列仍是 350（够放 Token 文案 + 10 个按钮），不跟着上面的用量列走。
+ * 右列取 350（够放 Token 文案 + 8 个按钮），不跟着上面的用量列走。
  */
 @container (max-width: 1183px) {
   .account-card.mode-list {

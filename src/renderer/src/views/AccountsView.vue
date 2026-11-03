@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, ref, toRef, watch } from 'vue'
+import { computed, h, nextTick, ref, toRef, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import {
@@ -413,6 +413,21 @@ async function openPortal(account: Account): Promise<void> {
 }
 
 /**
+ * 打开该账号的 Stripe 订阅门户（取消订阅 / 改支付方式 / 下载发票都在门户里做）。
+ * 门户链接要现场向 Kiro 换一次，所以有等待时间，按卡片上的 busy 转圈提示。
+ */
+async function openSubscriptionPortal(account: Account): Promise<void> {
+  await withBusy(account.id, 'subscription-portal', async () => {
+    const res = await window.api.openSubscriptionPortal(toPlain(account))
+    if (!res.success) return void message.error(res.error || '打开订阅门户失败')
+    // 没抢到无痕窗口时会退回系统默认浏览器，如实说明，别让用户以为是无痕开的
+    if (res.data && !res.data.privateMode) {
+      message.warning('没有找到可用的无痕浏览器，已用默认浏览器打开订阅门户')
+    }
+  })
+}
+
+/**
  * 点订阅标签要看的账号。
  * 查询与分流（开账单页 / 列档位 / 报错重试）都在弹窗里做，这里只负责挂弹窗，
  * 于是「点了就有反应」，不用先在卡片上干等一个小转圈。
@@ -576,12 +591,25 @@ const contextIds = contextMenu.highlight
 const cardHandlers = {
   info: (account: Account) => (infoTarget.value = account),
   copyEmail: (account: Account) => copyText(account.email, '邮箱已复制'),
-  createApiKey: (account: Account) => (apiKeyTarget.value = account),
   subscription: (account: Account) => (subscriptionTarget.value = account),
   pay: (account: Account) => (payTarget.value = account),
   edit: (account: Account) => (editTarget.value = account),
-  test: (account: Account) => (testTarget.value = account),
   usage: (account: Account) => (usageTarget.value = account)
+}
+
+/**
+ * 信息弹窗里点「测活 / API Key 管理」：先关信息弹窗，再开目标弹窗。
+ *
+ * 不叠着开是因为两层 antd 弹窗的 z-index 各自自增，而 CreateApiKeyModal
+ * 内部还有写死层级的明文弹窗与添加弹窗，叠起来会压错层。
+ * nextTick 等蒙层卸载后再挂载，避免两个弹窗的滚动锁互相顶掉。
+ */
+function fromInfo(kind: 'test' | 'create-api-key', account: Account): void {
+  infoTarget.value = null
+  void nextTick(() => {
+    if (kind === 'test') testTarget.value = account
+    else apiKeyTarget.value = account
+  })
 }
 
 /** 作用于多项时，菜单文案带上数量 */
@@ -950,8 +978,8 @@ function logoutIde(account: Account): void {
           @toggle-select="toggleSelect"
           @info="cardHandlers.info"
           @copy-email="cardHandlers.copyEmail"
-          @create-api-key="cardHandlers.createApiKey"
           @portal="openPortal"
+          @subscription-portal="openSubscriptionPortal"
           @subscription="cardHandlers.subscription"
           @pay="cardHandlers.pay"
           @edit="cardHandlers.edit"
@@ -961,7 +989,6 @@ function logoutIde(account: Account): void {
           @refresh-key="refreshKey"
           @refresh-usage="refreshUsage"
           @copy-token="copyToken"
-          @test="cardHandlers.test"
           @usage="cardHandlers.usage"
           @contextmenu="contextMenu.show"
         />
@@ -1026,6 +1053,8 @@ function logoutIde(account: Account): void {
     <AccountInfoModal
       v-if="infoTarget"
       :account="infoTarget"
+      @test="fromInfo('test', $event)"
+      @create-api-key="fromInfo('create-api-key', $event)"
       @close="infoTarget = null"
     />
     <AccountTestModal v-if="testTarget" :account="testTarget" @close="testTarget = null" />

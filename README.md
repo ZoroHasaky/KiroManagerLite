@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.1.3-6c5ce7" alt="version">
+  <img src="https://img.shields.io/badge/version-1.1.4-6c5ce7" alt="version">
   <img src="https://img.shields.io/badge/updated-2026--11--03-2f9e44" alt="updated">
   <img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="license">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="platform">
@@ -41,12 +41,12 @@
 - 一键把账号凭证写入 Kiro IDE 切换当前登录身份，可选切号后自动重启 IDE
 - 切号前会逐个实测 `profileArn` 候选再落盘 —— 写错这个字段是 IDE 报「Invalid token」的主因
 - 批量刷新 Token / 用量与积分，支持定时自动刷新；「主动续期」会在 IDE 当前账号的 Token 剩约 15 分钟时抢先续期并写盘，避免 IDE 自己刷新时撞车被登出
-- 真实流式对话测活：实时看输出、随时中止。只有 runtime 面的真实对话才能暴露封禁账号；响应区可「查看完整响应」，列出发给官方的每次请求与原始返回（成功、失败、中止都能看）
+- 真实流式对话测活（卡片「信息」弹窗里的「测活」按钮）：实时看输出、随时中止。只有 runtime 面的真实对话才能暴露封禁账号；响应区可「查看完整响应」，列出发给官方的每次请求与原始返回（成功、失败、中止都能看）
 - 测活的模型改为可搜索的级联选择，二级是该模型自己的推理档位（Claude 系 low / medium / high / xhigh / max，GPT 系另有 none，没有这一层的模型不显示二级）；只选主模型时自动补上它的默认档位
 
 **账号 API Key**
 
-- 卡片上的钥匙图标直接用该账号凭证向 Kiro 控制面申请 Key，并列出它已创建的全部 Key（名称、前缀、创建时间）
+- 卡片「信息」弹窗里的「API Key 管理」直接用该账号凭证向 Kiro 控制面申请 Key，并列出它已创建的全部 Key（名称、前缀、创建时间）
 - 完整明文上游只在创建时返回一次，因此生成后单独弹窗展示，可复制或一键添加到 API Key 管理；关闭后列表里只剩前缀
 - 批量生成：勾选多个账号后在「批量操作」里为每个账号各生成一个 Key，按顺序逐个执行、单个失败不影响后续，可中止与重试失败项；生成后可复制全部或通过批量导入添加到 API Key 管理
 
@@ -69,6 +69,13 @@
 - 找不到 Chrome / Edge 时自动退回内置浏览器，同样注入该账号的 cookie，功能不中断
 - 地区跟着设置的「浏览器地区」走：`--lang` 同时决定页面语言与 `Accept-Language`
 - Stripe 账单 / 结算页仍在应用内的私密窗口打开，不涉及账号身份，这部分保持不变
+
+**打开订阅门户（无痕）**
+
+- 动作区的钱包图标用该账号凭证现场换一条 Stripe 管理门户链接，交给系统浏览器的无痕窗口打开；
+  取消订阅、改支付方式、下载发票这类只能在门户里手动做的事，从卡片上一步就能进
+- 链接是短时效凭证，每次点击都重新换取，不缓存；账号未订阅或已是 Free 时按「没有可管理的订阅」提示
+- 这条入口只负责打开门户，不替代「切换 Free」——后者仍是纯 HTTP 直接改订阅，不启浏览器
 
 ### 🔑 API Key 管理
 
@@ -180,14 +187,14 @@
 
 <p align="center">
   <a href="https://github.com/ZoroHasaky/KiroManagerLite/releases/latest">
-    <img src="https://img.shields.io/badge/⬇%20下载最新版-v1.1.3-6c5ce7?style=for-the-badge" alt="下载最新版">
+    <img src="https://img.shields.io/badge/⬇%20下载最新版-v1.1.4-6c5ce7?style=for-the-badge" alt="下载最新版">
   </a>
   <a href="https://github.com/ZoroHasaky/KiroManagerLite/releases">
     <img src="https://img.shields.io/badge/全部版本-Releases-24292f?style=for-the-badge&logo=github" alt="全部版本">
   </a>
 </p>
 
-**最新版本：v1.1.3**（2026-11-03） · 变更详情见 [CHANGELOG.md](CHANGELOG.md)
+**最新版本：v1.1.4**（2026-11-03） · 变更详情见 [CHANGELOG.md](CHANGELOG.md)
 
 ### 选择对应的安装包
 
@@ -368,6 +375,7 @@ src/
     kiroPortal.ts        内置浏览器：私密窗口、工具条、看门狗重试与地区（含官网兜底）
     portalAuth.ts        门户会话身份：cookie 组装与 profileArn 补齐（两个浏览器通道共用）
     externalPortal.ts    前往官网：外部 Chrome 无痕窗口 + CDP 注入账号 cookie
+    subscriptionPortal.ts 打开订阅门户：取 Stripe 管理链接并交系统浏览器无痕打开
     ── API Key 网关
     keyService.ts        Key 管理与网关编排
     keyGateway.ts        本地 KRS / CPS 转发
@@ -422,7 +430,7 @@ src/
 
 ## 🔖 更新日志
 
-各版本变更记录见 [CHANGELOG.md](CHANGELOG.md)，当前版本 v1.1.3，最后更新于 2026-11-03。
+各版本变更记录见 [CHANGELOG.md](CHANGELOG.md)，当前版本 v1.1.4，最后更新于 2026-11-03。
 
 ---
 

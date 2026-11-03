@@ -30,6 +30,7 @@ import {
 } from './payment/session'
 import { generateBillingAddress, isValidProvince, listProvinces } from './payment/addressGen'
 import { switchSubscriptionToFree } from './subscriptionDowngrade'
+import { openSubscriptionPortal } from './subscriptionPortal'
 import { clearKiroSsoCache, readKiroAuthToken, readLocalKiroCredentials, ssoCacheFile } from './kiroAuth'
 import { restartKiroIde } from './kiroProcess'
 import { chatTraceOf, listKiroModels, streamApiKeyChat, streamKiroChat } from './kiroChat'
@@ -315,6 +316,11 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
 
   handle('accounts:subscription-plans', async (_e, account: Account) =>
     ok(await listSubscriptionPlans(account))
+  )
+
+  /** 取该账号的 Stripe 管理门户链接，并用系统浏览器的无痕窗口打开 */
+  handle('accounts:open-subscription-portal', async (_e, account: Account) =>
+    ok(await openSubscriptionPortal(account))
   )
 
   /** 用内置浏览器打开链接（Stripe 账单 / 结算页） */

@@ -57,6 +57,9 @@ const api = {
     invoke('accounts:subscription-checkout', account, subscriptionType, rejectSubscribed),
   /** 只查可开通档位（不判断是否已订阅） */
   listSubscriptionPlans: (account: unknown) => invoke('accounts:subscription-plans', account),
+  /** 取管理门户链接并用系统浏览器的无痕窗口打开（取消订阅 / 改支付方式等手动操作） */
+  openSubscriptionPortal: (account: unknown) =>
+    invoke('accounts:open-subscription-portal', account),
   /** 用内置浏览器打开链接 */
   openInAppBrowser: (url: string, title?: string) =>
     invoke('app:open-in-app-browser', url, title),

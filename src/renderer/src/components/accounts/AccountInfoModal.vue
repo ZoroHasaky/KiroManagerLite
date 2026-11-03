@@ -6,7 +6,10 @@ import {
   DownloadOutlined,
   EyeInvisibleOutlined,
   EyeOutlined,
-  GlobalOutlined
+  GlobalOutlined,
+  KeyOutlined,
+  ThunderboltOutlined,
+  WalletOutlined
 } from '@ant-design/icons-vue'
 import ExportAccountsModal from '@/components/accounts/ExportAccountsModal.vue'
 import { useAccountsStore } from '@/stores/accounts'
@@ -29,7 +32,13 @@ import { regionLabel } from '@shared/regions'
 import type { Account } from '@shared/types'
 
 const props = defineProps<{ account: Account | null }>()
-const emit = defineEmits<{ close: [] }>()
+/**
+ * 测活与 API Key 管理原本在卡片动作区，现在收敛到这里。
+ * 由父组件负责关掉本弹窗再打开对应弹窗——两层 antd 弹窗叠着开时，
+ * z-index 是全局自增的，CreateApiKeyModal 里又写死了内层弹窗的层级，
+ * 叠起来容易压错层，交给父组件串行切换最稳。
+ */
+const emit = defineEmits<{ close: []; test: [account: Account]; 'create-api-key': [account: Account] }>()
 
 const accountsStore = useAccountsStore()
 const settingsStore = useSettingsStore()
@@ -38,6 +47,7 @@ const showSecrets = ref(false)
 const busy = ref(false)
 const exportOpen = ref(false)
 const portalOpening = ref(false)
+const subscriptionPortalOpening = ref(false)
 
 // 列表里的行对象在 store 更新后会被替换，这里始终取最新副本
 const account = computed(() =>
@@ -133,6 +143,22 @@ async function openPortal(): Promise<void> {
   }
 }
 
+/** 取该账号的 Stripe 管理门户链接，用无痕浏览器打开（取消订阅 / 改支付方式等在门户里做） */
+async function openSubscriptionPortal(): Promise<void> {
+  const target = account.value
+  if (!target) return
+  subscriptionPortalOpening.value = true
+  try {
+    const res = await window.api.openSubscriptionPortal(toPlain(target))
+    if (!res.success) return void message.error(res.error || '打开订阅门户失败')
+    if (res.data && !res.data.privateMode) {
+      message.warning('没有找到可用的无痕浏览器，已用默认浏览器打开订阅门户')
+    }
+  } finally {
+    subscriptionPortalOpening.value = false
+  }
+}
+
 async function act(kind: 'refresh' | 'check' | 'switch'): Promise<void> {
   const target = account.value
   if (!target) return
@@ -170,6 +196,24 @@ async function act(kind: 'refresh' | 'check' | 'switch'): Promise<void> {
           <a-button :loading="portalOpening" @click="openPortal">
             <template #icon><GlobalOutlined /></template>
             前往官网
+          </a-button>
+        </a-tooltip>
+        <a-tooltip title="在无痕浏览器里打开 Stripe 订阅门户，可取消订阅、改支付方式、下载发票">
+          <a-button :loading="subscriptionPortalOpening" @click="openSubscriptionPortal">
+            <template #icon><WalletOutlined /></template>
+            订阅门户
+          </a-button>
+        </a-tooltip>
+        <a-tooltip title="连 Kiro 官方发一次真实流式对话，只有这样才能暴露封禁账号">
+          <a-button @click="emit('test', account)">
+            <template #icon><ThunderboltOutlined /></template>
+            测活
+          </a-button>
+        </a-tooltip>
+        <a-tooltip title="列出该账号已创建的 Kiro API Key，可直接新建">
+          <a-button @click="emit('create-api-key', account)">
+            <template #icon><KeyOutlined /></template>
+            API Key 管理
           </a-button>
         </a-tooltip>
         <a-button @click="exportOpen = true">

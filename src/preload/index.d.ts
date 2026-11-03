@@ -172,6 +172,10 @@ export interface Api {
   ) => Promise<IpcResult<{ url: string }>>
   /** 只查可开通档位（不判断是否已订阅） */
   listSubscriptionPlans: (account: Account) => Promise<IpcResult<SubscriptionPlan[]>>
+  /** 取管理门户链接并用系统浏览器的无痕窗口打开；门户里可取消订阅 / 改支付方式 */
+  openSubscriptionPortal: (
+    account: Account
+  ) => Promise<IpcResult<BrowserOpenInfo & { url: string }>>
   /** 用内置浏览器打开链接 */
   openInAppBrowser: (url: string, title?: string) => Promise<IpcResult<{ url: string }>>
 
