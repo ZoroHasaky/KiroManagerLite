@@ -7,7 +7,6 @@ import {
   CheckCircleFilled,
   CloudDownloadOutlined,
   CopyOutlined,
-  FileTextOutlined,
   GlobalOutlined,
   GoogleOutlined,
   GithubOutlined,
@@ -34,7 +33,7 @@ const props = defineProps<{ open: boolean }>()
 const emit = defineEmits<{
   'update:open': [boolean]
   /** 转交给导入弹窗：本弹窗会先关掉自己 */
-  'open-import': ['file' | 'text']
+  'open-import': []
 }>()
 
 const accountsStore = useAccountsStore()
@@ -98,27 +97,21 @@ const methods = [
 ]
 
 /**
- * 批量导入的入口。这两项不在本弹窗里完成，点击后关掉自己、把场子交给对应的导入弹窗，
- * 与工具栏「导入」下拉里的两个入口指向同一处。
+ * 批量导入的入口。不在本弹窗里完成，点击后关掉自己、打开导入弹窗，
+ * 与工具栏「导入」按钮指向同一个弹窗——文件与文本在那个弹窗里同时可用。
  */
 const importEntries = [
   {
-    key: 'file' as const,
-    title: '从文件导入',
-    desc: '拖拽或选择 JSON 文件，可一次多选',
+    key: 'import' as const,
+    title: '批量导入',
+    desc: '选择 / 拖入文件，或直接粘贴 JSON、卡密',
     icon: InboxOutlined
-  },
-  {
-    key: 'text' as const,
-    title: '输入 JSON 导入',
-    desc: '粘贴卡密、JSON、CSV 等文本',
-    icon: FileTextOutlined
   }
 ]
 
-function gotoImport(kind: 'file' | 'text'): void {
+function gotoImport(): void {
   close()
-  emit('open-import', kind)
+  emit('open-import')
 }
 
 const providers: {
@@ -500,7 +493,7 @@ async function submitCredentials(): Promise<void> {
         v-for="item in importEntries"
         :key="item.key"
         class="option"
-        @click="gotoImport(item.key)"
+        @click="gotoImport()"
       >
         <span class="option-icon"><component :is="item.icon" /></span>
         <span class="option-text">

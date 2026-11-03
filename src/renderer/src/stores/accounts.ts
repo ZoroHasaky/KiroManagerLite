@@ -20,6 +20,7 @@ import {
 } from '@shared/types'
 import { errorMessage, isCredentialRejected } from '@shared/errors'
 import { shouldSkipAccountUsageRefresh } from '@shared/refreshPolicy'
+import { accountStageOf, type AccountStage } from '@shared/accountStage'
 import { DEFAULT_REGION } from '@shared/regions'
 import { runPool } from '@/utils/format'
 import { countByGroup, matchesGroupFilter } from '@/utils/groups'
@@ -61,8 +62,15 @@ export interface AccountFilter {
   /**
    * 按分组筛选。空数组表示不限；特殊值 __none__ 代表「未分组」，
    * 这样「未分组」能和普通分组一样被勾选，不必再加一个布尔开关。
+   *
+   * 账号页已改用固定阶段 tab（见 stages），这里保留给旧的筛选调用方与 API Key 页。
    */
   groupIds: string[]
+  /**
+   * 按阶段筛选（未使用 / 待支付 / 已订阅 / 已出售 / 已闲置）。
+   * 空数组表示不限；阶段由账号数据推导，不落盘，见 shared/accountStage。
+   */
+  stages: AccountStage[]
   /** 搜索范围：all 为智能搜索（邮箱 + 昵称 + 备注一起找），其余只搜对应字段 */
   searchScope: AccountSearchScope
   /**
@@ -176,6 +184,7 @@ export const useAccountsStore = defineStore('accounts', () => {
     subscriptions: [],
     idps: [],
     groupIds: [],
+    stages: [],
     searchScope: 'all',
     queries: []
   })
@@ -379,10 +388,12 @@ export const useAccountsStore = defineStore('accounts', () => {
       createdFrom,
       createdTo,
       groupIds,
+      stages,
       searchScope
     } = filter.value
     const keyword = search.trim().toLowerCase()
     const groupSet = groupIds.length ? new Set(groupIds) : null
+    const stageSet = stages.length ? new Set(stages) : null
     const queryMatched = batchQuery.value?.matched ?? null
     const inTrash = trashView.value
     const groupExists = (id: string): boolean => groupMap.value.has(id)
@@ -395,6 +406,8 @@ export const useAccountsStore = defineStore('accounts', () => {
       if (keyword && !searchTextOf(a, searchScope).includes(keyword)) return false
       // 多分组：命中所选任一分组即可；分组都已被删除的账号视为未分组
       if (groupSet && !matchesGroupFilter(a, groupSet, groupExists)) return false
+      // 阶段：命中任一选中阶段即可；阶段由订阅 / 用量 / 支付链接 / 出售标记实时推导
+      if (stageSet && !stageSet.has(accountStageOf(a))) return false
       if (statuses.length && !statuses.includes(a.status)) return false
       if (subscriptions.length && !subscriptions.includes(a.subscription.type)) return false
       if (idps.length && !idps.includes(a.idp)) return false
@@ -432,6 +445,8 @@ export const useAccountsStore = defineStore('accounts', () => {
       subscriptions: [],
       idps: [],
       groupIds: filter.value.groupIds,
+      // 阶段 tab 是独立入口，筛选面板重置不清它
+      stages: filter.value.stages,
       // 搜索框清空了，范围跟着回到默认的智能搜索
       searchScope: 'all',
       // 批量查询同样是独立入口（搜索框旁的标签上有 ×），筛选面板重置不清它
@@ -470,6 +485,13 @@ export const useAccountsStore = defineStore('accounts', () => {
       Student: 0
     }
     const byIdp: Record<IdpType, number> = { BuilderId: 0, Github: 0, Google: 0, Enterprise: 0 }
+    const byStage: Record<AccountStage, number> = {
+      unused: 0,
+      pendingPayment: 0,
+      subscribed: 0,
+      sold: 0,
+      idle: 0
+    }
     let expiringSoon = 0
 
     for (const a of scope) {
@@ -477,10 +499,11 @@ export const useAccountsStore = defineStore('accounts', () => {
       byStatus[a.status] = (byStatus[a.status] ?? 0) + 1
       bySubscription[a.subscription.type] = (bySubscription[a.subscription.type] ?? 0) + 1
       byIdp[a.idp] = (byIdp[a.idp] ?? 0) + 1
+      byStage[accountStageOf(a)]++
       if ((a.subscription.daysRemaining ?? 99) <= EXPIRING_SOON_DAYS) expiringSoon++
     }
 
-    return { total: scope.length, byStatus, bySubscription, byIdp, expiringSoon }
+    return { total: scope.length, byStatus, bySubscription, byIdp, byStage, expiringSoon }
   })
 
   // ============ 增删改 ============
@@ -612,6 +635,111 @@ export const useAccountsStore = defineStore('accounts', () => {
     next[index] = { ...next[index], ...patch }
     accounts.value = next
     persist()
+  }
+
+  /**
+   * 记录订阅弹窗为该账号生成过的支付链接（阶段判定「待支付」的依据）。
+   * 只保留最近一次：同一账号可能换档位重新生成，旧链接不再有意义。
+   */
+  function setPaymentLink(id: string, url: string): void {
+    updateAccount(id, { paymentLink: url, paymentLinkAt: Date.now() })
+  }
+
+  /**
+   * 记录「已提交切换 Free」。
+   *
+   * Stripe 的降级周期末才生效，提交后订阅档位仍是原值，所以必须把这个事实落盘，
+   * 否则重启后已切过的账号会重新出现在切换列表里、还能被重复提交。
+   *
+   * transitionAt 是 Stripe 给的周期末时间戳（秒）。到了那个时刻订阅自己会变 Free，
+   * 记录就该失效——见 hasPendingDowngrade。
+   */
+  function markDowngraded(id: string, transitionAt?: number): void {
+    const account = get(id)
+    updateAccount(id, {
+      downgradedAt: Date.now(),
+      downgradeAt: transitionAt && transitionAt > 0 ? transitionAt : undefined,
+      // 记下当时的档位，供 hasPendingDowngrade 识别「后来又重新订阅」
+      downgradeFrom: account?.subscription.type
+    })
+  }
+
+  /**
+   * 账号是否还有「已提交但尚未生效」的切换 Free。
+   *
+   * 判据三条，任一不成立就认为记录已失效：
+   *  1. 有记录；
+   *  2. 没到生效时间（没有生效时间就按长期有效）；
+   *  3. 当前档位与提交时一致 —— 档位变了说明账号已经重新订阅付费档，
+   *     旧记录不能再挡着它。
+   */
+  function hasPendingDowngrade(account: Account, now = Date.now()): boolean {
+    if (!account.downgradedAt) return false
+    // 生效时间按秒存储，这里用 >=：到点那一刻就算已生效，不留悬空记录
+    if (account.downgradeAt && account.downgradeAt * 1000 < now) return false
+    // 档位变了（重新订阅）：旧记录作废，允许再次切换
+    if (account.downgradeFrom && account.downgradeFrom !== account.subscription.type) return false
+    return true
+  }
+
+  /** 清除切换记录（账号重新订阅后手动恢复用） */
+  function clearDowngrade(ids: string[]): number {
+    const target = new Set(ids.filter(Boolean))
+    if (!target.size) return 0
+    let changed = 0
+    const next = accounts.value.map((account) => {
+      if (!target.has(account.id) || !account.downgradedAt) return account
+      changed++
+      const { downgradedAt: _at, downgradeAt: _until, downgradeFrom: _from, ...rest } = account
+      return rest as Account
+    })
+    if (changed) {
+      accounts.value = next
+      persist()
+    }
+    return changed
+  }
+
+  /**
+   * 标记 / 取消「已出售」。
+   * 标记时清掉支付链接：卖掉的账号不该继续出现在「待支付」里，
+   * 取消标记后它会按订阅与用量重新落回其它阶段。
+   */
+  function setSold(ids: string[], sold: boolean): number {
+    const target = new Set(ids.filter(Boolean))
+    if (!target.size) return 0
+    const now = Date.now()
+    let changed = 0
+    const next = accounts.value.map((account) => {
+      if (!target.has(account.id) || !!account.soldAt === sold) return account
+      changed++
+      if (sold) return { ...account, soldAt: now, paymentLink: undefined, paymentLinkAt: undefined }
+      const { soldAt: _sold, ...rest } = account
+      return rest as Account
+    })
+    if (changed) {
+      accounts.value = next
+      persist()
+    }
+    return changed
+  }
+
+  /** 清掉支付链接，让账号回到「未使用 / 已闲置」的自动判定 */
+  function clearPaymentLink(ids: string[]): number {
+    const target = new Set(ids.filter(Boolean))
+    if (!target.size) return 0
+    let changed = 0
+    const next = accounts.value.map((account) => {
+      if (!target.has(account.id) || !account.paymentLink) return account
+      changed++
+      const { paymentLink: _link, paymentLinkAt: _at, ...rest } = account
+      return rest as Account
+    })
+    if (changed) {
+      accounts.value = next
+      persist()
+    }
+    return changed
   }
 
   /**
@@ -1175,11 +1303,20 @@ export const useAccountsStore = defineStore('accounts', () => {
   /** 下一轮密钥 / 用量刷新的时间戳，未启用时为 null，供界面展示 */
   const nextKeyRefreshAt = ref<number | null>(null)
   const nextUsageRefreshAt = ref<number | null>(null)
+  /**
+   * 已闲置账号单独一条轨道。
+   *
+   * 闲置号的积分不会再涨，没必要跟着常规间隔一起发请求；账号一多（几百上千个闲置号）
+   * 这轮请求纯属浪费。分开计时后它按 idleUsageRefreshInterval（默认 12 小时）跑，
+   * 与常规用量刷新互不影响。
+   */
+  const nextIdleUsageRefreshAt = ref<number | null>(null)
 
   // 已生效的间隔（分钟）。设置对象是整体替换的，换主题、折叠侧边栏这类无关改动
   // 也会触发外部的 watch，靠这两个值判断间隔是否真的变了，避免倒计时被无故清零
   let appliedKeyInterval = 0
   let appliedUsageInterval = 0
+  let appliedIdleInterval = 0
 
   /**
    * 上次真正跑完一轮的时间，落 localStorage 跨启动保留。
@@ -1187,7 +1324,8 @@ export const useAccountsStore = defineStore('accounts', () => {
    */
   const LAST_RUN_STORAGE = {
     key: 'kal:auto-key-refresh-at',
-    usage: 'kal:auto-usage-refresh-at'
+    usage: 'kal:auto-usage-refresh-at',
+    idleUsage: 'kal:auto-idle-usage-refresh-at'
   } as const
 
   type AutoKind = keyof typeof LAST_RUN_STORAGE
@@ -1209,6 +1347,9 @@ export const useAccountsStore = defineStore('accounts', () => {
   const keyIntervalMs = (): number => Math.max(1, settingsStore.settings.keyRefreshInterval) * 60_000
   const usageIntervalMs = (): number =>
     Math.max(1, settingsStore.settings.usageRefreshInterval) * 60_000
+  /** 闲置账号的间隔按小时配置，换算成毫秒 */
+  const idleUsageIntervalMs = (): number =>
+    Math.max(1, settingsStore.settings.idleUsageRefreshInterval) * 3_600_000
 
   /**
    * 只处理即将过期的账号（剩余有效期 < AUTO_REFRESH_WINDOW_MS）。
@@ -1240,40 +1381,49 @@ export const useAccountsStore = defineStore('accounts', () => {
   }
 
   /**
-   * 覆盖全部值得刷的账号，界面上保持静默，只往控制台记录，避免定时弹通知打扰。
+   * 覆盖本轮该刷的账号，界面上保持静默，只往控制台记录，避免定时弹通知打扰。
    *
    * 跳过封禁与凭证失效的账号：自动刷新是每隔一段时间就跑一轮的，
    * 把必然 401 / 403 的账号一直带着刷，只会白耗时间并在日志里堆无效告警。
    * 临时故障（网络、限流、5xx）不在跳过范围内，下一轮照常重试。
+   *
+   * @param scope 'regular' 只刷非闲置账号，'idle' 只刷已闲置账号。
+   *   两条轨道各有各的间隔（见 idleUsageIntervalMs），互不重叠，避免同一账号被刷两遍。
    */
-  async function refreshAllUsage(): Promise<void> {
+  async function refreshAllUsage(scope: 'regular' | 'idle'): Promise<void> {
     // 回收站里的账号是冷藏的，不参与自动刷新用量
     const live = liveAccounts.value
-    const runnable = live.filter((a) => !shouldSkipAccountUsageRefresh(a))
+    const byStage = live.filter((a) =>
+      scope === 'idle' ? accountStageOf(a) === 'idle' : accountStageOf(a) !== 'idle'
+    )
+    const runnable = byStage.filter((a) => !shouldSkipAccountUsageRefresh(a))
     const ids = runnable.map((a) => a.id)
-    const skipped = live.length - ids.length
+    const skipped = byStage.length - ids.length
     if (!ids.length) return
+    const label = scope === 'idle' ? '已闲置账号' : '常规账号'
     const startedAt = Date.now()
     console.info(
-      `[AutoRefresh] 开始刷新用量：${ids.length} 个账号` +
+      `[AutoRefresh] 开始刷新${label}用量：${ids.length} 个账号` +
         (skipped ? `（跳过 ${skipped} 个封禁或凭证失效账号）` : '')
     )
     const res = await runBatch(ids, 'check')
     // 打印耗时便于对照间隔：耗时接近或超过间隔时下一轮会紧接着开始
     console.info(
-      `[AutoRefresh] 用量刷新结束：成功 ${res.success}，失败 ${res.failed}，` +
+      `[AutoRefresh] ${label}用量刷新结束：成功 ${res.success}，失败 ${res.failed}，` +
         `耗时 ${Math.round((Date.now() - startedAt) / 1000)}s`
     )
-    if (res.failed) console.warn('[AutoRefresh] 用量刷新失败明细：', res.messages)
+    if (res.failed) console.warn(`[AutoRefresh] ${label}用量刷新失败明细：`, res.messages)
   }
 
-  /** 每秒检查两条任务是否到期；到期就跑，跑完从当前时间重新计时 */
+  /** 每秒检查三条轨道是否到期；到期就跑，跑完从当前时间重新计时 */
   async function autoTick(): Promise<void> {
     if (autoRunning) return
     const at = Date.now()
     const keyDue = nextKeyRefreshAt.value !== null && at >= nextKeyRefreshAt.value
     const usageDue = nextUsageRefreshAt.value !== null && at >= nextUsageRefreshAt.value
-    if (!keyDue && !usageDue) return
+    const idleDue =
+      nextIdleUsageRefreshAt.value !== null && at >= nextIdleUsageRefreshAt.value
+    if (!keyDue && !usageDue && !idleDue) return
     // 手动批量操作正占用着全局任务状态：本轮不丢，等它结束后的下一个 tick 立刻补跑
     if (task.value.running) return
 
@@ -1292,9 +1442,18 @@ export const useAccountsStore = defineStore('accounts', () => {
       if (usageDue) {
         const next = at + usageIntervalMs()
         nextUsageRefreshAt.value = next
-        await refreshAllUsage()
+        await refreshAllUsage('regular')
         markRan('usage')
         if (Date.now() >= next) nextUsageRefreshAt.value = Date.now() + usageIntervalMs()
+      }
+      if (idleDue) {
+        const next = at + idleUsageIntervalMs()
+        nextIdleUsageRefreshAt.value = next
+        await refreshAllUsage('idle')
+        markRan('idleUsage')
+        if (Date.now() >= next) {
+          nextIdleUsageRefreshAt.value = Date.now() + idleUsageIntervalMs()
+        }
       }
     } catch (e) {
       console.error('[AutoRefresh] 本轮自动刷新异常：', e)
@@ -1332,12 +1491,16 @@ export const useAccountsStore = defineStore('accounts', () => {
   /** 用量刷新整轮重新计时，同上 */
   function scheduleUsageRefresh(): void {
     appliedUsageInterval = settingsStore.settings.usageRefreshInterval
+    appliedIdleInterval = settingsStore.settings.idleUsageRefreshInterval
     if (!settingsStore.settings.autoRefreshUsage) {
       nextUsageRefreshAt.value = null
+      nextIdleUsageRefreshAt.value = null
       return
     }
     markRan('usage')
+    markRan('idleUsage')
     nextUsageRefreshAt.value = Date.now() + usageIntervalMs()
+    nextIdleUsageRefreshAt.value = Date.now() + idleUsageIntervalMs()
     ensureTick()
   }
 
@@ -1349,7 +1512,12 @@ export const useAccountsStore = defineStore('accounts', () => {
    * 不必再干等一个完整间隔。
    */
   function alignNextRun(kind: AutoKind): number {
-    const interval = kind === 'key' ? keyIntervalMs() : usageIntervalMs()
+    const interval =
+      kind === 'key'
+        ? keyIntervalMs()
+        : kind === 'idleUsage'
+          ? idleUsageIntervalMs()
+          : usageIntervalMs()
     const due = readLastRun(kind) + interval
     // 已经欠一轮：统一归到当下，界面显示「本轮正在执行…」而不是一个久远的时间
     return due <= Date.now() ? Date.now() : due
@@ -1367,11 +1535,14 @@ export const useAccountsStore = defineStore('accounts', () => {
 
   function alignUsageRefresh(): void {
     appliedUsageInterval = settingsStore.settings.usageRefreshInterval
+    appliedIdleInterval = settingsStore.settings.idleUsageRefreshInterval
     if (!settingsStore.settings.autoRefreshUsage) {
       nextUsageRefreshAt.value = null
+      nextIdleUsageRefreshAt.value = null
       return
     }
     nextUsageRefreshAt.value = alignNextRun('usage')
+    nextIdleUsageRefreshAt.value = alignNextRun('idleUsage')
     ensureTick()
   }
 
@@ -1383,26 +1554,45 @@ export const useAccountsStore = defineStore('accounts', () => {
    * 会立刻补跑一轮而不是干等一个完整间隔。
    */
   function startAutoRefresh(): void {
-    const { autoRefresh, autoRefreshUsage, keyRefreshInterval, usageRefreshInterval } =
-      settingsStore.settings
+    const {
+      autoRefresh,
+      autoRefreshUsage,
+      keyRefreshInterval,
+      usageRefreshInterval,
+      idleUsageRefreshInterval
+    } = settingsStore.settings
     // 用 align 而不是 schedule：冷启动或改短间隔后若已欠一轮，会立刻补跑
     if (!autoRefresh) nextKeyRefreshAt.value = null
     else if (nextKeyRefreshAt.value === null || appliedKeyInterval !== keyRefreshInterval) {
       alignKeyRefresh()
     }
-    if (!autoRefreshUsage) nextUsageRefreshAt.value = null
-    else if (nextUsageRefreshAt.value === null || appliedUsageInterval !== usageRefreshInterval) {
+    if (!autoRefreshUsage) {
+      nextUsageRefreshAt.value = null
+      nextIdleUsageRefreshAt.value = null
+    } else if (
+      nextUsageRefreshAt.value === null ||
+      appliedUsageInterval !== usageRefreshInterval ||
+      appliedIdleInterval !== idleUsageRefreshInterval
+    ) {
       alignUsageRefresh()
     }
 
-    if (nextKeyRefreshAt.value === null && nextUsageRefreshAt.value === null) stopTick()
-    else ensureTick()
+    if (
+      nextKeyRefreshAt.value === null &&
+      nextUsageRefreshAt.value === null &&
+      nextIdleUsageRefreshAt.value === null
+    ) {
+      stopTick()
+    } else {
+      ensureTick()
+    }
   }
 
   function stopAutoRefresh(): void {
     stopTick()
     nextKeyRefreshAt.value = null
     nextUsageRefreshAt.value = null
+    nextIdleUsageRefreshAt.value = null
   }
 
   return {
@@ -1428,6 +1618,12 @@ export const useAccountsStore = defineStore('accounts', () => {
     addByOnlineLogin,
     updateAccount,
     setNoteForAccounts,
+    setPaymentLink,
+    markDowngraded,
+    hasPendingDowngrade,
+    clearDowngrade,
+    setSold,
+    clearPaymentLink,
     // 分组
     groups,
     groupMap,
@@ -1452,6 +1648,7 @@ export const useAccountsStore = defineStore('accounts', () => {
     logoutIde,
     nextKeyRefreshAt,
     nextUsageRefreshAt,
+    nextIdleUsageRefreshAt,
     scheduleKeyRefresh,
     scheduleUsageRefresh,
     startAutoRefresh,

@@ -10,8 +10,8 @@ npmRebuild: false
 # CI 里统一用 --publish never，实际上传由 GitHub Actions 负责
 publish:
   provider: github
-  owner: lucks-cloud
-  repo: kiro-manager-lite
+  owner: ZoroHasaky
+  repo: KiroManagerLite
 # 自定义 URL Scheme：kiro-manager-lite:// 与短别名 kml:// 快捷唤起应用
 protocols:
   - name: Kiro Manager Lite
@@ -38,6 +38,10 @@ files:
   - '!.github'
   # 构建期脚本（清理产物、生成图标与 DMG 背景），运行时用不到
   - '!scripts'
+  # 打包配置本身也不该进安装包（含 build:mac:arm 用的 arm 覆盖配置）
+  - '!electron-builder*.yml'
+  # 版本单一真源，只在构建期读取，不进安装包
+  - '!VERSION'
   - '!*.md'
 asarUnpack:
   - resources/**

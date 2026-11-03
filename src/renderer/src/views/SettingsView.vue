@@ -21,6 +21,7 @@ import {
 } from '@shared/backupSchedule'
 import { DEFAULT_SETTINGS } from '@shared/types'
 import type {
+  AccountDisplayMode,
   AppSettings,
   BackupScheduleStatus,
   DataBackupSummary,
@@ -65,14 +66,23 @@ function nextRefreshText(at: number | null): string {
   const remain = at - now.value
   // 到期后到期时间会被立刻往后推，这里还没推说明本轮正在执行或在等手动任务让路
   if (remain <= 0) return '本轮正在执行…'
-  const minutes = Math.floor(remain / 60_000)
+  // 小时级的间隔（如闲置号 12 小时）不能只写成「720 分」，读起来没有意义
+  const hours = Math.floor(remain / 3_600_000)
+  const minutes = Math.floor((remain % 3_600_000) / 60_000)
   const seconds = Math.floor((remain % 60_000) / 1000)
-  const countdown = minutes ? `${minutes} 分 ${seconds} 秒后` : `${seconds} 秒后`
+  const countdown = hours
+    ? `${hours} 小时 ${minutes} 分后`
+    : minutes
+      ? `${minutes} 分 ${seconds} 秒后`
+      : `${seconds} 秒后`
   return `下次刷新 ${formatCheckedAt(at, now.value)}（${countdown}）`
 }
 
 const nextKeyRefreshText = computed(() => nextRefreshText(accountsStore.nextKeyRefreshAt))
 const nextUsageRefreshText = computed(() => nextRefreshText(accountsStore.nextUsageRefreshAt))
+const nextIdleUsageRefreshText = computed(() =>
+  nextRefreshText(accountsStore.nextIdleUsageRefreshAt)
+)
 const nextApiKeyUsageRefreshText = computed(() => nextRefreshText(keysStore.nextUsageRefreshAt))
 
 watch(
@@ -93,6 +103,12 @@ const layoutModeOptions: { value: LayoutMode; label: string }[] = [
   { value: 'top', label: '上下布局' }
 ]
 
+/** 列表展示形态。账号与 API Key 各记一份，选项相同 */
+const displayModeOptions: { value: AccountDisplayMode; label: string }[] = [
+  { value: 'card', label: '卡片' },
+  { value: 'compact', label: '紧凑卡片' },
+  { value: 'list', label: '列表' }
+]
 /** 主题色预设。色值沿用旧版的七个，老用户选过的颜色升级后仍能在这里对上、显示为选中 */
 const colorOptions: { value: string; label: string }[] = [
   { value: '#7c3aed', label: '紫罗兰' },
@@ -193,6 +209,7 @@ function update(patch: Parameters<typeof settingsStore.update>[0]): void {
 type NumericSettingKey =
   | 'keyRefreshInterval'
   | 'usageRefreshInterval'
+  | 'idleUsageRefreshInterval'
   | 'apiKeyUsageRefreshInterval'
   | 'apiKeyRefreshConcurrency'
 
@@ -439,6 +456,23 @@ function resetAll(): void {
             <a-radio value="large">大尺寸</a-radio>
           </a-radio-group>
         </a-form-item>
+        <a-form-item label="账号展示形态">
+          <div class="choice-group" role="radiogroup" aria-label="账号展示形态">
+            <button
+              v-for="opt in displayModeOptions"
+              :key="opt.value"
+              type="button"
+              role="radio"
+              class="choice-card"
+              :class="{ selected: settings.accountDisplayMode === opt.value }"
+              :aria-checked="settings.accountDisplayMode === opt.value"
+              @click="update({ accountDisplayMode: opt.value })"
+            >
+              <span class="choice-label">{{ opt.label }}</span>
+            </button>
+          </div>
+          <div class="choice-hint">账号管理页的展示形态：卡片信息最全，列表一屏能看更多</div>
+        </a-form-item>
         <a-form-item label="隐私打码" class="field-inline">
           <SettingSwitch field="privacyMode" />
           <span class="muted">列表与详情中隐藏邮箱、昵称、API Key 等隐私信息</span>
@@ -499,6 +533,22 @@ function resetAll(): void {
           <span class="muted">
             多久拉取一次积分用量与订阅信息
             <span class="next-refresh">{{ nextUsageRefreshText }}</span>
+          </span>
+        </a-form-item>
+        <a-form-item label="已闲置账号刷新间隔" class="field-inline">
+          <a-input-number
+            :value="settings.idleUsageRefreshInterval"
+            :min="1"
+            :max="168"
+            :step="1"
+            addon-after="小时"
+            style="width: 180px"
+            :disabled="!settings.autoRefreshUsage"
+            @change="(v: unknown) => updateNumber('idleUsageRefreshInterval', v)"
+          />
+          <span class="muted">
+            已闲置账号不会再产生新消耗，单独按这个间隔刷新即可
+            <span class="next-refresh">{{ nextIdleUsageRefreshText }}</span>
           </span>
         </a-form-item>
         <a-form-item label="批量并发" class="field-inline">

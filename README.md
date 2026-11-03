@@ -324,6 +324,8 @@ npm run build
 npm run build:mac
 ```
 
+本应用直接调用的 Kiro / AWS 接口（端点、认证方式、各接口作用与已知坑）见 **[Kiro / AWS 接口清单](docs/api-overview.md)**。
+
 ---
 
 ## 📂 目录结构

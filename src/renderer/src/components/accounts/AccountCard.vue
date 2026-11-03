@@ -4,6 +4,7 @@ import {
   CalendarOutlined,
   ClockCircleOutlined,
   CopyOutlined,
+  CreditCardOutlined,
   DeleteOutlined,
   EditOutlined,
   GlobalOutlined,
@@ -11,10 +12,10 @@ import {
   KeyOutlined,
   LoginOutlined,
   LogoutOutlined,
+  ProfileOutlined,
   SyncOutlined,
   ThunderboltOutlined
 } from '@ant-design/icons-vue'
-import { useAccountsStore } from '@/stores/accounts'
 import { useSettingsStore } from '@/stores/settings'
 import {
   IDP_META,
@@ -28,8 +29,8 @@ import {
   tokenLife,
   usageColor
 } from '@/utils/format'
-import { displayEmail, displayName, displayNote } from '@/utils/display'
-import { groupsOfItem } from '@/utils/groups'
+import { displayEmail, displayNote } from '@/utils/display'
+import { accountStageOf, ACCOUNT_STAGE_META } from '@shared/accountStage'
 import { now } from '@/utils/now'
 import type { Account, AccountDisplayMode } from '@shared/types'
 
@@ -60,7 +61,8 @@ const busy = computed(() => !!props.busyAction)
  */
 const emit = defineEmits<{
   'toggle-select': [id: string, checked: boolean]
-  detail: [account: Account]
+  /** 点「信息」按钮：打开账号信息弹窗 */
+  info: [account: Account]
   edit: [account: Account]
   remove: [account: Account]
   switch: [account: Account]
@@ -75,13 +77,16 @@ const emit = defineEmits<{
   portal: [account: Account]
   /** 点订阅标签：管理订阅或开通订阅 */
   subscription: [account: Account]
+  /** 点「待支付」阶段标签：打开应用内支付弹窗 */
+  pay: [account: Account]
   /** 点用量区域查看积分变化日志 */
   usage: [account: Account]
+  /** 点邮箱：复制该账号邮箱 */
+  'copy-email': [account: Account]
   /** 右键整卡：原生事件 + 本卡账号，菜单由父组件统一渲染 */
   contextmenu: [event: MouseEvent, account: Account]
 }>()
 
-const accountsStore = useAccountsStore()
 const settingsStore = useSettingsStore()
 
 const precision = computed(() => settingsStore.settings.usagePrecision)
@@ -89,14 +94,18 @@ const precision = computed(() => settingsStore.settings.usagePrecision)
 const privacy = computed(() => settingsStore.settings.privacyMode)
 
 const email = computed(() => displayEmail(props.account.email, privacy.value))
-const nickname = computed(() => displayName(props.account, privacy.value))
 
 /** 备注在隐私模式下整段遮住；留空时显示占位符，保证同排卡片高度一致 */
 const note = computed(() => displayNote(props.account.note, privacy.value))
 
-/** 所属分组（可多个，按分组顺序）；已被删除的分组不显示 */
-const groupNames = computed(() =>
-  groupsOfItem(props.account, accountsStore.groups).map((group) => group.name)
+/** 当前阶段：由订阅档位、积分用量、支付链接、出售标记实时推导 */
+const stageKey = computed(() => accountStageOf(props.account))
+const stage = computed(() => ACCOUNT_STAGE_META[stageKey.value])
+
+/** 已出售但已经产生用量：阶段归到「已闲置」，卡片上额外标一个「已出售」 */
+const soldButIdle = computed(() => !!props.account.soldAt && stageKey.value === 'idle')
+const soldAtText = computed(() =>
+  props.account.soldAt ? formatDateTime(props.account.soldAt) : ''
 )
 
 /** 使用率百分比原始值，用量条与文案各自再做取整 */
@@ -195,6 +204,7 @@ type ActionKey =
   | 'test'
   | 'create-api-key'
   | 'portal'
+  | 'info'
   | 'edit'
   | 'remove'
 
@@ -219,6 +229,7 @@ interface CardAction {
 
 /** 首个按钮随登录状态切换：已登录显示退出登录，未登录显示登录 */
 const actions = computed<CardAction[]>(() => [
+  { id: 'info', action: 'info', title: '信息（查看账号详情）', icon: ProfileOutlined },
   props.account.isActive
     ? {
         id: 'logout',
@@ -261,9 +272,12 @@ function isLoading(item: CardAction): boolean {
  * emit 的重载签名不接受联合类型，这里收窄成「无参事件名」的形态再调用；
  * ActionKey 已经限定了取值范围，不会派发出未声明的事件。
  */
-const emitAction = emit as (event: ActionKey | 'detail' | 'subscription' | 'usage', account: Account) => void
+const emitAction = emit as (
+  event: ActionKey | 'subscription' | 'usage' | 'copy-email' | 'pay',
+  account: Account
+) => void
 
-function trigger(key: ActionKey | 'detail' | 'subscription' | 'usage'): void {
+function trigger(key: ActionKey | 'subscription' | 'usage' | 'copy-email' | 'pay'): void {
   emitAction(key, props.account)
 }
 
@@ -279,7 +293,7 @@ function onContextMenu(e: MouseEvent): void {
  * 整卡点击 = 勾选 / 取消勾选。
  *
  * 只靠那个 16px 的复选框的话，勾几十个账号很折磨。
- * 有自己语义的区域（身份区开详情、用量块开积分变化、右下角动作按钮、复选框本身）
+ * 有自己语义的区域（邮箱复制、订阅标签、用量块、右下角动作按钮、复选框本身）
  * 各自 @click.stop 拦下事件，剩下的空白与标签、额度、报错行都落到这里。
  */
 function onCardClick(): void {
@@ -308,9 +322,11 @@ function onCardClick(): void {
         @click.stop
         @change="onCheckChange"
       />
-      <div class="identity" @click.stop="trigger('detail')">
-        <span class="email" :title="privacy ? undefined : props.account.email">{{ email }}</span>
-        <span class="nickname">{{ nickname }}</span>
+      <!-- 邮箱点击复制；不再显示昵称，账号名称与其它信息统一走「信息」弹窗 -->
+      <div class="identity">
+        <a-tooltip :title="privacy ? '点击复制邮箱' : `点击复制 ${props.account.email}`">
+          <span class="email" @click.stop="trigger('copy-email')">{{ email }}</span>
+        </a-tooltip>
         <span
           class="note"
           :title="props.account.note && !privacy ? props.account.note : undefined"
@@ -323,7 +339,7 @@ function onCardClick(): void {
     </div>
 
     <!--
-      data-vg-grow：分组多了折到第二行时，虚拟滚动量出多出来的高度，只让这张卡所在的那一行加高
+      data-vg-grow：标签多到折行时，虚拟滚动量出多出来的高度，只让这张卡所在的那一行加高
       （与报错行同一个口径），不会把所有卡片一起撑高。
     -->
     <div class="tag-row" data-vg-grow>
@@ -342,17 +358,29 @@ function onCardClick(): void {
         </span>
       </a-tooltip>
       <a-tag :color="idp.color" :bordered="false">{{ idp.text }}</a-tag>
-      <!-- 分组标签：没分组就不显示，避免每张卡都多一个空标签；多个分组各占一个标签 -->
-      <a-tag
-        v-for="groupName in groupNames"
-        :key="groupName"
-        class="group-tag"
-        color="purple"
-        :bordered="false"
-        :title="`分组：${groupName}`"
+      <!--
+        阶段标签：由订阅 / 用量 / 支付链接 / 出售标记推导，与工具栏的 tab 同源。
+        「待支付」额外可点，直接打开应用内支付弹窗；其余阶段是纯展示。
+      -->
+      <a-tooltip v-if="stageKey === 'pendingPayment'" title="应用内支付（自动填写账单与卡信息）">
+        <span class="stage-tag-clickable" @click.stop="trigger('pay')">
+          <a-tag :color="stage.color" :bordered="false" class="stage-tag">
+            {{ stage.text }}
+            <CreditCardOutlined class="stage-hint" />
+          </a-tag>
+        </span>
+      </a-tooltip>
+      <a-tag v-else :color="stage.color" :bordered="false" class="stage-tag">{{ stage.text }}</a-tag>
+      <!--
+        已出售但已经被用起来的号会落到「已闲置」，这里补一个标记，
+        否则会以为它还在待售。判定见 shared/accountStage。
+      -->
+      <a-tooltip
+        v-if="soldButIdle"
+        :title="`已标记为出售，但已产生用量（${soldAtText}），因此归入已闲置`"
       >
-        {{ groupName }}
-      </a-tag>
+        <a-tag color="purple" :bordered="false" class="stage-tag">已出售</a-tag>
+      </a-tooltip>
     </div>
 
     <!-- 更新时间在列表模式里没地方摆，挂到整块的 title 上，鼠标停一下就能看到 -->
@@ -542,12 +570,10 @@ function onCardClick(): void {
 .identity {
   flex: 1 1 auto;
   min-width: 0;
-  cursor: pointer;
   line-height: 1.35;
 }
 
 .email,
-.nickname,
 .note {
   display: block;
   overflow: hidden;
@@ -558,18 +584,14 @@ function onCardClick(): void {
 .email {
   font-weight: 600;
   font-size: 13.5px;
+  cursor: pointer;
 }
 
-.identity:hover .email {
+.email:hover {
   color: var(--kal-primary);
 }
 
-.nickname {
-  font-size: 12px;
-  color: var(--kal-muted);
-}
-
-/* 与昵称同为次要信息，但带「备注：」前缀区分，避免两行灰字看不出差别 */
+/* 与邮箱同为次要信息，但带「备注：」前缀区分，避免两行灰字看不出差别 */
 .note {
   font-size: 12px;
   color: var(--kal-muted);
@@ -583,7 +605,7 @@ function onCardClick(): void {
 }
 
 /*
- * 标签排不下时自动换行：一个账号可以属于多个分组，挤在一行只能全部截成省略号。
+ * 标签排不下时自动换行：订阅名可能很长，挤在一行只能截成省略号。
  * 每个标签保持完整宽度，放不下就整个挪到下一行（列表模式另有单行规则，见下方）。
  */
 .tag-row {
@@ -597,15 +619,9 @@ function onCardClick(): void {
   flex: 0 0 auto;
 }
 
-/*
- * 分组名是用户自己填的，长度不可控：一般完整显示，
- * 只有单个名字长过整行时才截断成省略号，全名看悬停提示。
- */
-.tag-row .group-tag {
-  max-width: 100%;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+/* 阶段标签保持单行，阶段名很短，不需要截断 */
+.tag-row .stage-tag {
+  flex: 0 0 auto;
   white-space: nowrap;
 }
 
@@ -617,6 +633,22 @@ function onCardClick(): void {
 }
 
 .subscription-hint {
+  margin-left: 2px;
+  font-size: 12px;
+}
+
+/* 「待支付」阶段标签也是入口：打开应用内支付弹窗 */
+.stage-tag-clickable {
+  display: inline-flex;
+  cursor: pointer;
+  transition: filter 0.15s;
+}
+
+.stage-tag-clickable:hover {
+  filter: brightness(0.94);
+}
+
+.stage-hint {
   margin-left: 2px;
   font-size: 12px;
 }
@@ -922,8 +954,9 @@ function onCardClick(): void {
    * 邮箱 | 标签(吃掉富余) | 用量 | 功能区
    * 邮箱列定死 400px：富余宽度没用完时它不该跟着缩，否则窗口一变窄邮箱先被截。
    * 富余全部落在标签那一列（1fr），标签本身左对齐，多出来的宽度就是留白。
+   * 功能区定死 350px：10 个 24px 按钮 + Token 文案，少一点按钮就会换行。
    */
-  grid-template-columns: 400px minmax(190px, 1fr) 350px 320px;
+  grid-template-columns: 400px minmax(190px, 1fr) 350px 350px;
   align-items: center;
   /* 块间留白靠列间距，不画分隔线 */
   column-gap: 18px;
@@ -969,13 +1002,13 @@ function onCardClick(): void {
 
 /*
  * 分档阈值按「单元格宽度」算，卡片内容宽度还要再减去 28px 内边距和 2px 边框。
- * 1344 = 内容 1314（400 + 190 + 350 + 320 + 三道间距 54）+ 30，
+ * 1374 = 内容 1344（400 + 190 + 350 + 350 + 三道间距 54）+ 30，
  * 再窄第一行就装不下四块，或者标签会被 overflow 裁掉半个。
  */
 /* 窄一档：标签掉到第二行铺满整宽，第一行留「邮箱 | 富余 | 用量 | 功能区」 */
-@container (max-width: 1343px) {
+@container (max-width: 1373px) {
   .account-card.mode-list {
-    grid-template-columns: 400px minmax(0, 1fr) 350px 320px;
+    grid-template-columns: 400px minmax(0, 1fr) 350px 350px;
   }
 
   .account-card.mode-list .tag-row {
@@ -985,21 +1018,21 @@ function onCardClick(): void {
 }
 
 /*
- * 再窄一档（内容 1124 = 400 + 350 + 320 + 三道间距 54）：功能区掉到第二行。
+ * 再窄一档（内容 1154 = 400 + 350 + 350 + 三道间距 54）：功能区掉到第二行。
  * 右侧那一列变成「用量在上、按钮在下」—— 用量是要读的数据，
  * 按钮是操作，读的东西放上面更顺；标签铺在邮箱 + 富余那两列下面。
  *
  * 邮箱列写成 minmax(0, 400px) 而不是硬 400：宽度够时和上面两档一样是 400，
- * 不够时才让它让步。写死 400 的话，这一档的下限会顶到单元格 786px，
+ * 不够时才让它让步。写死 400 的话，这一档的下限会顶到单元格 816px，
  * 而最窄窗口（940，单元格约 734px）就会掉进最后那个竖排兜底档。
- * 右列仍是 320（够放 Token 文案 + 9 个按钮），不跟着上面的 350 走。
+ * 右列仍是 350（够放 Token 文案 + 10 个按钮），不跟着上面的用量列走。
  */
-@container (max-width: 1153px) {
+@container (max-width: 1183px) {
   .account-card.mode-list {
-    grid-template-columns: minmax(0, 400px) minmax(0, 1fr) 320px;
+    grid-template-columns: minmax(0, 400px) minmax(0, 1fr) 350px;
   }
 
-  /* 用量留在第一行第三列（列宽变成 320，块跟着铺满） */
+  /* 用量留在第一行第三列（列宽变成 350，块跟着铺满） */
   .account-card.mode-list .card-foot {
     grid-area: 2 / 3 / 3 / 4;
   }
@@ -1038,7 +1071,7 @@ function onCardClick(): void {
 
 /*
  * 标签段：一行放不下就截断，不换行撑高整条。
- * 左右各留一点边距，把「身份 + 状态」和「订阅 / 登录方式 / 分组」两组分开，
+ * 左右各留一点边距，把「身份 + 状态」和「订阅 / 登录方式 / 阶段」两组分开，
  * 否则状态标签和订阅标签紧挨着，看起来像同一组。
  */
 .account-card.mode-list .tag-row {
@@ -1073,7 +1106,7 @@ function onCardClick(): void {
 }
 
 /*
- * 第四块：Token 剩余时间 + 动作按钮。列宽定死 320px（Token 文案约 95 + 按钮 216 + 间距），
+ * 第四块：Token 剩余时间 + 动作按钮。列宽定死 350px（Token 文案约 95 + 按钮 240 + 间距），
  * 靠 space-between 把按钮钉在右缘 —— 定宽是为了让每一行的按钮竖着成列，
  * 用内容宽度的话「Token 49 分钟」和「Token 已过期」会让按钮左右错开几像素。
  */

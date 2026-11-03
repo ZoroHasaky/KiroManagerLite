@@ -5,7 +5,14 @@ import * as http from 'http'
 import { setProtocolClient } from './appProtocol'
 import { openUrl } from './browser'
 import { errorMessage } from '../shared/errors'
-import { KIRO_AUTH_BASE, KIRO_OIDC_SCOPES, KIRO_START_URL, oidcEndpoint } from './kiroEndpoints'
+import {
+  AMAZON_Q_CLI_CLIENT_NAME,
+  AMAZON_Q_CLI_OIDC_SCOPES,
+  KIRO_AUTH_BASE,
+  KIRO_OIDC_SCOPES,
+  KIRO_START_URL,
+  oidcEndpoint
+} from './kiroEndpoints'
 import { httpRequest, type HttpResponse } from './net'
 import { DEFAULT_REGION } from '../shared/regions'
 import type {
@@ -168,16 +175,38 @@ function expired(): boolean {
 
 // ============ OIDC 客户端注册 ============
 
+interface OidcClientProfile {
+  clientName: string
+  scopes: string[]
+}
+
+/** 本应用自己的客户端身份：Enterprise SSO 用它注册 */
+const APP_CLIENT_PROFILE: OidcClientProfile = {
+  clientName: 'Kiro Manager Lite',
+  scopes: KIRO_OIDC_SCOPES
+}
+
+/**
+ * Builder ID 用的客户端身份，与官方 Amazon Q Developer CLI 完全一致。
+ * 服务端按签发客户端决定能否调订阅管理接口，用本应用自己的名字注册会拿到 401
+ * （详见 kiroEndpoints 里 AMAZON_Q_CLI_* 的注释）。
+ */
+const BUILDER_ID_CLIENT_PROFILE: OidcClientProfile = {
+  clientName: AMAZON_Q_CLI_CLIENT_NAME,
+  scopes: AMAZON_Q_CLI_OIDC_SCOPES
+}
+
 async function registerOidcClient(
   region: string,
   grantTypes: string[],
   issuerUrl: string,
-  redirectUris?: string[]
+  redirectUris?: string[],
+  profile: OidcClientProfile = APP_CLIENT_PROFILE
 ): Promise<{ clientId: string; clientSecret: string }> {
   const res = await postJson(`${oidcEndpoint(region)}/client/register`, {
-    clientName: 'Kiro Manager Lite',
+    clientName: profile.clientName,
     clientType: 'public',
-    scopes: KIRO_OIDC_SCOPES,
+    scopes: profile.scopes,
     grantTypes,
     ...(redirectUris ? { redirectUris } : {}),
     issuerUrl
@@ -216,7 +245,9 @@ export async function startBuilderIdLogin(
   const { clientId, clientSecret } = await registerOidcClient(
     region,
     ['urn:ietf:params:oauth:grant-type:device_code', 'refresh_token'],
-    KIRO_START_URL
+    KIRO_START_URL,
+    undefined,
+    BUILDER_ID_CLIENT_PROFILE
   )
 
   const res = await postJson(`${oidcEndpoint(region)}/device_authorization`, {

@@ -33,6 +33,7 @@ import {
   displayNote as maskedNote
 } from '@/utils/display'
 import { shouldSkipKeyUsageRefresh } from '@shared/refreshPolicy'
+import { appendNotePreset } from '@shared/notePresets'
 import RegionSelect from '@/components/common/RegionSelect.vue'
 import AddApiKeyModal from '@/components/keys/AddApiKeyModal.vue'
 import ImportApiKeysModal from '@/components/keys/ImportApiKeysModal.vue'
@@ -52,6 +53,7 @@ import { useRangeSelect } from '@/utils/rangeSelect'
 import { DEFAULT_SORT, SORT_FIELDS, compareBy, type SortField, type SortKey } from '@/utils/listSort'
 import GroupPickerModal from '@/components/common/GroupPickerModal.vue'
 import BatchNoteModal from '@/components/common/BatchNoteModal.vue'
+import NotePresetBar from '@/components/common/NotePresetBar.vue'
 import DisplayModeSelect from '@/components/common/DisplayModeSelect.vue'
 import CardContextMenu, { type ContextMenuItem } from '@/components/common/CardContextMenu.vue'
 import TrashToggle from '@/components/common/TrashToggle.vue'
@@ -529,7 +531,7 @@ const someVisibleSelected = computed(() => visibleSelectedCount.value > 0 && !al
 const normalCount = computed(() => keyStats.value.byStatus.normal)
 const errorCount = computed(() => keyStats.value.byStatus.error)
 
-/** 单击勾选；按住 Shift 勾选一段，Ctrl / Cmd + A 勾选当前筛选结果（见 rangeSelect） */
+/** 单击勾选；按住 Shift 勾选一段，Ctrl / Cmd + A 勾选当前筛选结果，Esc 取消全部（见 rangeSelect） */
 const { toggle: toggleSelect } = useRangeSelect({
   order: () => filteredKeys.value.map((entry) => entry.id),
   apply: (ids, checked) => {
@@ -537,7 +539,10 @@ const { toggle: toggleSelect } = useRangeSelect({
     for (const id of ids) checked ? next.add(id) : next.delete(id)
     selectedIds.value = [...next]
   },
-  selectAll: () => toggleSelectVisible(true)
+  selectAll: () => toggleSelectVisible(true),
+  clear: () => {
+    selectedIds.value = []
+  }
 })
 
 function toggleSelectVisible(checked: boolean): void {
@@ -606,6 +611,11 @@ async function submitEdit(): Promise<void> {
   if (error) return void message.error(error)
   editOpen.value = false
   message.success('备注已保存')
+}
+
+/** 点常用备注：追加到已有文本后面，与批量设置备注同一套习惯 */
+function applyEditPreset(text: string): void {
+  editNote.value = appendNotePreset(editNote.value, text)
 }
 
 function clearDeletedKeyUi(ids: string[]): void {
@@ -1415,6 +1425,7 @@ onUnmounted(() => store.stopStatsPolling())
 
     <!-- 备注用多行输入，与账号的编辑弹窗、批量设置备注保持一致：备注常写好几件事 -->
     <a-modal v-if="editOpen" v-model:open="editOpen" title="修改备注" @ok="submitEdit">
+      <NotePresetBar :value="editNote" @pick="applyEditPreset" />
       <a-textarea
         v-model:value="editNote"
         :rows="3"

@@ -58,8 +58,15 @@ export function useBatchRun<R extends BatchRow>(options: {
     running.value = true
     aborted.value = false
     silent = false
-    for (let index = 0; index < rows.value.length; index++) {
-      const row = rows.value[index]
+    /*
+     * 开始时固定一份快照。
+     * rows 可能是 computed（例如「只处理勾选项」），执行过程中账号数据变化
+     * 会让它重新求值并返回新数组；直接用 rows.value 边跑边取会漏行或重复处理。
+     * 快照里的行对象是同一份引用，改 state 仍然会反映到界面上。
+     */
+    const queue = rows.value.slice()
+    for (let index = 0; index < queue.length; index++) {
+      const row = queue[index]
       if (aborted.value) break
       if (row.state === 'ok') continue
       row.state = 'running'

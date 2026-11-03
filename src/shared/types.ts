@@ -126,16 +126,96 @@ export interface SubscriptionPlan {
 }
 
 /**
- * 点订阅标签后一次问到的结果。
- * 已订阅的账号能拿到 Stripe 账单管理链接；未订阅的账号拿不到（接口回 400），
- * 于是退化成「列出可开通档位」——两种情况合并成一次 IPC，省掉一轮来回。
+ * 点订阅标签后一次问到的结果：只有可开通档位。
+ *
+ * 账单 / 支付链接不在这里，改由用户选中档位时调 createSubscriptionCheckout 现生成。
+ * 原因见 kiroSubscription.getSubscriptionEntry 的注释。
  */
 export interface SubscriptionEntry {
-  /** Stripe 账单管理链接；未订阅时为空 */
-  manageUrl?: string
   plans: SubscriptionPlan[]
   /** 接口给的免责声明文案 */
   disclaimer: string[]
+}
+
+/** 应用内支付：生成的一条中国账单地址（英文形态，字段对应 Stripe 表单） */
+export interface PaymentAddress {
+  name: string
+  zip: string
+  city: string
+  district: string
+  street: string
+  provinceZh: string
+  provinceEn: string
+}
+
+/** 应用内支付：银行卡信息 */
+export interface PaymentCardInfo {
+  /** 纯数字卡号（12–19 位） */
+  number: string
+  /** 有效期 MMYY；填入页面后由 Stripe 自己格式化成 MM/YY */
+  expiry: string
+  /** 3–4 位安全码 */
+  cvc: string
+}
+
+/** 应用内支付：打开浏览器并开始自动填充 */
+export interface PaymentStartInput {
+  accountId: string
+  /** Stripe 结算链接 */
+  url: string
+  /** 账单地址；不传则随机生成 */
+  address?: PaymentAddress
+  /** 卡信息；不传则只填地址 */
+  card?: PaymentCardInfo
+}
+
+/**
+ * 自动填充的阶段。
+ * opening / page-loading 是等待期，filling 表示表单已出现正在填，
+ * filled 表示都填好了、等用户确认付款，其余是终态。
+ */
+export type PaymentPhase =
+  | 'opening'
+  | 'page-loading'
+  | 'filling'
+  | 'filled'
+  | 'success'
+  | 'expired'
+  | 'error'
+  | 'closed'
+
+/** 主进程推给界面的填充进度 */
+export interface PaymentUpdate {
+  accountId: string
+  phase: PaymentPhase
+  detail?: string
+}
+
+/**
+ * 把账号订阅切换到 Kiro Free 的结果。
+ *
+ * 除了成功/失败，还要区分「无需变更」的几种情况：
+ * 已经是 Free、已安排周期末切换、已设置到期不续费——批量执行时它们都算正常结果，
+ * 不该显示成失败让用户去重试。
+ */
+export interface SwitchToFreeResult {
+  success: boolean
+  error?: string
+  /** 订阅本来就是 Free，未做变更 */
+  alreadyFree?: boolean
+  /** 已安排周期末切 Free（本次只读发现，未提交） */
+  alreadyScheduled?: boolean
+  /** 已设置到期不续费，下周期不会扣款，无需切换 */
+  wontRenew?: boolean
+  /** 本次实际提交了切换 */
+  switched?: boolean
+  /** 提交后按 Stripe 降级规则，下周期起才变 Free */
+  scheduledToFree?: boolean
+  /** 周期末变更生效时间戳（秒） */
+  transitionAt?: number
+  /** 切换前的计划名（读取失败时为价格 ID） */
+  previousPlan?: string
+  subId?: string
 }
 
 /** 账号实体 */
@@ -155,6 +235,34 @@ export interface Account {
   groupIds?: string[]
   /** 放入回收站的时间；存在即表示在回收站里，不参与列表、搜索、自动刷新与反代选号 */
   trashedAt?: number
+  /**
+   * 订阅管理弹窗里为该账号生成过的 Stripe 结算链接。
+   * 只要生成过就留下，用于判定「待支付」阶段；用户去 Stripe 付完款后由订阅刷新把档位带回来，
+   * 阶段自动变成「已订阅」。清空它的入口是「标记为已出售 / 重置阶段」。
+   */
+  paymentLink?: string
+  /** 生成支付链接的时间戳（ms），仅用于展示 */
+  paymentLinkAt?: number
+  /** 标记为已出售的时间戳（ms）；存在即表示已售出，阶段固定为「已出售」 */
+  soldAt?: number
+  /**
+   * 已提交「切换 Free」的时间戳（ms）。
+   *
+   * Stripe 的降级是周期末生效，提交后 subscription.type 仍然是原档位，
+   * 光看订阅状态分不出「没切过」和「切了但要等生效」——重启后已经切过的账号
+   * 会重新出现在切换列表里，还能被重复提交。这里记下提交事实，
+   * 配合 downgradeAt（生效时间）判断什么时候可以忽略它。
+   */
+  downgradedAt?: number
+  /** 切换 Free 的生效时间戳（秒，Stripe 的周期末）；没有它说明当时没取到，按已提交长期有效处理 */
+  downgradeAt?: number
+  /**
+   * 提交切换时账号的订阅档位。
+   *
+   * 用来识别「切完之后又自己重新订阅了付费档」：订阅刷新带回的档位与这里不同，
+   * 说明账号已经重新订阅，那条切换记录不该再挡住它。
+   */
+  downgradeFrom?: SubscriptionType
   userId?: string
   profileArn?: string
   credentials: AccountCredentials
@@ -1274,6 +1382,14 @@ export interface AppSettings {
   keyRefreshInterval: number
   /** 用量刷新间隔（分钟） */
   usageRefreshInterval: number
+  /**
+   * 已闲置账号的用量刷新间隔（小时）。
+   *
+   * 「已闲置」是阶段推导出来的（见 shared/accountStage）：用过分或用量超阈值的号。
+   * 这些号不会再产生新的消耗，却要跟着每轮用量刷新一起发请求，账号一多就是纯浪费。
+   * 这里让它们按更长的间隔单独刷，其余账号仍按 usageRefreshInterval 走。
+   */
+  idleUsageRefreshInterval: number
   /** 批量并发 */
   concurrency: number
   /** 用量接口类型 */
@@ -1338,6 +1454,11 @@ export interface AppSettings {
    * 后者影响页面里 navigator.language 读到的值——门户按前端语言判断时只有它管用。
    */
   portalLocale: PortalLocale
+  /**
+   * 常用备注：设置备注弹窗里输入框上方的一排短语，点一下填进输入框。
+   * 账号与 API Key 共用同一份，读设置时统一过一遍 normalizeNotePresets。
+   */
+  notePresets: string[]
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -1359,6 +1480,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoRefreshUsage: true,
   keyRefreshInterval: 5,
   usageRefreshInterval: 5,
+  // 已闲置账号默认 12 小时刷一次：它们不再产生新消耗，没必要跟着短间隔空跑
+  idleUsageRefreshInterval: 12,
   concurrency: 5,
   usageApiType: 'rest',
   importConcurrency: 50,
@@ -1383,7 +1506,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // 固定间隔重试，10 次也只多花 1 秒左右，对话不会有明显卡顿
   gatewayRetryMaxAttempts: 10,
   gatewayRetryDelayMs: 100,
-  portalLocale: DEFAULT_PORTAL_LOCALE
+  portalLocale: DEFAULT_PORTAL_LOCALE,
+  // 空数组打底：常用备注完全由用户自己攒，不给任何预设
+  notePresets: []
 }
 
 // ============================================

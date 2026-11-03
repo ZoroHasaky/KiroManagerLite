@@ -3,12 +3,12 @@
  * 订阅入口弹窗。
  *
  * 点订阅标签就立刻开这个弹窗，查询在弹窗里做：
- *   - 已订阅：拿到 Stripe 账单管理链接 → 用内置浏览器打开，弹窗随即关闭；
- *   - 未订阅：列出可开通档位，每个档位两个动作（开通并支付 / 只复制支付链接）；
+ *   - 先列出可开通档位；
+ *   - 用户选中某个档位后，才现生成 Stripe 支付 / 账单链接；
  *   - 查询失败：就地显示错误并给「重试」，不必关掉重来。
  *
  * 加载态放在弹窗里而不是让标签转圈：接口要先开一次门户首页取 CSRF，
- * 再加一到两次 CBOR 调用，等待期是实打实的，卡片上一个小转圈说明不了发生了什么。
+ * 再加一次 CBOR 调用，等待期是实打实的，卡片上一个小转圈说明不了发生了什么。
  */
 import { computed, onMounted, ref } from 'vue'
 import { message } from 'ant-design-vue'
@@ -19,6 +19,7 @@ import {
   SyncOutlined
 } from '@ant-design/icons-vue'
 import { freshAccount as ensureFreshAccount } from '@/utils/freshAccount'
+import { useAccountsStore } from '@/stores/accounts'
 import { copyText } from '@/utils/ui'
 import { toPlain } from '@/utils/ipc'
 import { errorMessage } from '@shared/errors'
@@ -27,6 +28,8 @@ import type { Account, SubscriptionPlan } from '@shared/types'
 const props = defineProps<{ account: Account }>()
 
 const emit = defineEmits<{ close: [] }>()
+
+const accountsStore = useAccountsStore()
 
 const loading = ref(true)
 const refreshingToken = ref(false)
@@ -46,8 +49,11 @@ function freshAccount(): Promise<Account> {
 }
 
 /**
- * 查订阅入口。已订阅的账号直接开账单页并关掉弹窗，
- * 未订阅的账号留下档位列表。
+ * 查订阅入口。
+ *
+ * 只查可开通档位，不再探测账单管理链接：部分 Free 账号调管理链接接口会回 401，
+ * 一旦前置探测就会把整个查询带崩、连档位列表都显示不出来。支付链接改为
+ * 用户点具体档位时现生成（见 checkoutUrl）。
  */
 async function load(): Promise<void> {
   loading.value = true
@@ -60,20 +66,6 @@ async function load(): Promise<void> {
     }
 
     const entry = res.data
-    if (entry.manageUrl) {
-      const opened = await window.api.openInAppBrowser(
-        entry.manageUrl,
-        `订阅管理 - ${props.account.email}`
-      )
-      if (!opened.success) {
-        error.value = opened.error || '打开账单页失败'
-        return
-      }
-      message.success('已在内置浏览器打开 Stripe 账单管理')
-      emit('close')
-      return
-    }
-
     plans.value = entry.plans
     disclaimer.value = entry.disclaimer
     if (!entry.plans.length) error.value = '接口没有返回可开通的订阅档位'
@@ -93,7 +85,12 @@ function priceText(plan: SubscriptionPlan): string {
   return `${plan.currency === 'USD' ? '$' : ''}${plan.amount}${plan.currency === 'USD' ? '' : ` ${plan.currency}`}`
 }
 
-/** 生成结算链接；失败统一提示，成功后交给调用方决定打开还是复制 */
+/**
+ * 生成结算链接；失败统一提示，成功后交给调用方决定打开还是复制。
+ *
+ * 链接一生成就回写到账号上（paymentLink）：账号页的「待支付」阶段靠它判定，
+ * 用户去 Stripe 付款后订阅档位由刷新带回来，阶段自动变成「已订阅」。
+ */
 async function checkoutUrl(plan: SubscriptionPlan, action: string): Promise<string> {
   busy.value = `${plan.subscriptionType}:${action}`
   try {
@@ -105,6 +102,7 @@ async function checkoutUrl(plan: SubscriptionPlan, action: string): Promise<stri
       message.error(res.error || '生成支付链接失败')
       return ''
     }
+    accountsStore.setPaymentLink(props.account.id, res.data.url)
     return res.data.url
   } catch (e) {
     message.error(errorMessage(e))
@@ -164,8 +162,8 @@ async function copyCheckout(plan: SubscriptionPlan): Promise<void> {
 
       <template v-else>
         <p class="tip muted">
-          账号 {{ props.account.email }} 当前没有可管理的订阅，可直接开通下列档位。
-          支付由 Stripe 承载，链接每次点击时现生成。
+          账号 {{ props.account.email }} 可开通下列档位。支付由 Stripe 承载，
+          选中档位后才会生成对应链接。
         </p>
 
         <div class="plan-grid">

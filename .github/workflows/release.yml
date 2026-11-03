@@ -1,46 +1,128 @@
 name: Release
 
-# 推送 v* 标签即三平台并行构建并发布 Release。
-# 手动触发（workflow_dispatch）只做构建验证，不创建 Release。
+# 版本由根目录的 VERSION 文件控制。
+#
+# 触发逻辑：推送包含 VERSION 改动的提交到 main 时自动打包并发布。
+# 判断依据是「本次推送的 before..after 之间 VERSION 内容有没有变化」，
+# 而不是「文件有没有被碰到」——只改 VERSION 里的数字才算发布，
+# 顺带格式化、改注释都不会误触发一次发布。
+#
+# 也可以在 Actions 页面手动触发（workflow_dispatch）：
+#   - 默认只构建，不建 Release，用于验证打包链路；
+#   - 勾选 force_release 才真正发布，适合补发或重跑失败的发布。
 on:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - main
   workflow_dispatch:
+    inputs:
+      force_release:
+        description: '真正发布（创建 Release 并上传安装包）'
+        type: boolean
+        default: false
+
+# 同一分支的连续推送只保留最后一次：VERSION 连改两次时，
+# 前一次构建中的产物已经过期，没必要再跑完。
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
+  # 先判断这次要不要发布，后续 job 用它决定是否继续。
+  # 单独做成一个 job 而不是在 build 里用 if：needs 里多个 job 的条件写起来更清楚，
+  # 且 build 被跳过时 release 不会因为「needs 被跳过」而误判。
+  detect:
+    name: 检测版本变化
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.detect.outputs.release }}
+      version: ${{ steps.detect.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 要读 before 提交里的 VERSION。一次推送可能包含多个提交，
+          # 只取 2 个的话 before 拿不到、会退化成只比最后一个提交，漏掉前面的版本改动。
+          fetch-depth: 0
+
+      - name: 读取 VERSION 并比对
+        id: detect
+        run: |
+          version="$(head -n1 VERSION | tr -d '\r' | xargs)"
+          echo "当前 VERSION: $version"
+
+          # 版本号必须是语义化版本，否则打出来的包名和更新检查都会出问题，
+          # 这里提前拦住，避免跑到打包阶段才失败
+          if ! printf '%s' "$version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
+            echo "::error::VERSION 内容不是合法的语义化版本：'$version'"
+            exit 1
+          fi
+
+          should=false
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # 手动触发时按用户的勾选决定
+            if [ "${{ inputs.force_release }}" = "true" ]; then
+              should=true
+            fi
+            echo "手动触发，force_release=${{ inputs.force_release }}"
+          else
+            # 推送触发：比对这次推送范围内的 VERSION 内容。
+            # before 取不到（强推、分支新建）时退回上一个提交。
+            if git cat-file -e "${{ github.event.before }}" 2>/dev/null; then
+              ref="${{ github.event.before }}"
+            else
+              ref="HEAD~1"
+            fi
+            # 拿不到上一个版本有两种情况，都不该当成「版本变了」：
+            #   - 上一个提交里根本没有 VERSION（首次引入该文件）；
+            #   - ref 本身不存在（仓库只有这一个提交）。
+            # 否则刚接入 VERSION 机制的那次提交会立刻发一个与当前版本同号的 Release。
+            prev="$(git show "$ref:VERSION" 2>/dev/null | head -n1 | tr -d '\r' | xargs || true)"
+            if [ -z "$prev" ]; then
+              echo "上一个提交里没有 VERSION（或被取不到），视为首次引入，不触发发布"
+              prev="$version"
+            fi
+            echo "上次 VERSION: $prev"
+            if [ "$prev" != "$version" ]; then
+              should=true
+            fi
+          fi
+
+          echo "release=$should" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "$should" = "true" ]; then
+            echo "→ 将打包 v$version 并发布"
+          else
+            echo "→ VERSION 未变化，跳过打包"
+          fi
+
   build:
     name: 构建 ${{ matrix.label }}
+    needs: detect
+    if: needs.detect.outputs.release == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
-      # 单平台失败不连累其它平台，便于只重跑失败的那个
+      # 单平台失败不连累另一个：只重跑失败的那个即可
       fail-fast: false
       matrix:
         include:
-          - label: macOS
-            os: macos-latest
-            script: build:mac
-            artifacts: |
-              dist/*.dmg
-              dist/*.pkg
-              dist/*.zip
-              dist/*.blockmap
-              dist/latest-mac.yml
           # Windows 包必须在 windows runner 上打：
-          # cbor-extract 没有 win32 预编译产物以外的可用组合，交叉编译会失败
-          - label: Windows
+          # cbor-extract 没有跨平台可用的预编译产物，交叉编译会失败
+          - label: Windows x64
             os: windows-latest
             script: build:win
             artifacts: |
               dist/*.exe
               dist/*.blockmap
               dist/latest.yml
-          - label: Linux
-            os: ubuntu-latest
-            script: build:linux
+          # macOS arm64（Apple Silicon）。只出 dmg + zip，不产 pkg。
+          - label: macOS arm64
+            os: macos-latest
+            script: build:mac:arm
             artifacts: |
-              dist/*.AppImage
-              dist/latest-linux.yml
+              dist/*.dmg
+              dist/*.zip
+              dist/*.blockmap
+              dist/latest-mac.yml
     steps:
       - uses: actions/checkout@v4
 
@@ -62,8 +144,15 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
+      # 提交里的 package.json 版本若与 VERSION 不同，说明改版本时漏了同步。
+      # 打包会自动纠正（prepack:dist 先跑同步脚本），所以这里只提示不阻断：
+      # continue-on-error 让这一步标红但不中断 job，作者看到就能顺手补上。
+      - name: 提示版本文件是否已同步
+        continue-on-error: true
+        run: npm run version:check
+
       # --publish never：产物统一交给下面的 release job 上传，
-      # 避免 electron-builder 在 CI 检测到 tag 时自行创建重复的 Release
+      # 避免 electron-builder 在 CI 里自行创建重复的 Release
       - name: 打包
         run: npm run ${{ matrix.script }} -- --publish never
 
@@ -76,8 +165,8 @@ jobs:
 
   release:
     name: 发布 Release
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [detect, build]
+    if: needs.detect.outputs.release == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -90,16 +179,18 @@ jobs:
           merge-multiple: true
 
       - name: 生成发布说明
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="$VERSION"
           # 只取 CHANGELOG 里当前版本那一段，避免把历史日志全塞进说明。
           # 同时跳过底部链接定义，以及每版重复的「安装遇到问题」入口行——
           # 后者统一放到说明最底部（见下方），并用绝对链接，避免夹在下载表上方且无法点击。
           awk -v ver="$version" '
-            $0 ~ "^## \\[" ver "\\]" { flag = 1; next }
-            flag && /^## \[/ { exit }
-            flag && /^\[.*\]: http/ { next }
-            flag && /^> *安装遇到问题/ { next }
+            !flag && index($0, "## [" ver "]") == 1 { flag = 1; next }
+            flag && index($0, "## [") == 1 { exit }
+            flag && $0 ~ /^\[.*\]: http/ { next }
+            flag && $0 ~ /^> *安装遇到问题/ { next }
             flag { print }
           ' CHANGELOG.md > NOTES.md
           if [ ! -s NOTES.md ]; then
@@ -111,43 +202,46 @@ jobs:
 
           | 平台 | 文件 |
           | --- | --- |
-          | macOS (Apple Silicon) | `*-mac-arm64.pkg`（推荐）或 `*-mac-arm64.dmg` |
-          | macOS (Intel) | `*-mac-x64.pkg`（推荐）或 `*-mac-x64.dmg` |
-          | Windows | `*-win-x64-setup.exe` |
-          | Linux | `*-linux-x86_64.AppImage` |
+          | Windows (x64) | `*-win-x64-setup.exe` |
+          | macOS (Apple Silicon) | `*-mac-arm64.dmg` |
 
-          macOS 推荐用 `.pkg`：双击按向导安装，装好后打开应用不会再提示「已损坏」。
-          安装包未做签名与公证，首次双击 `.pkg` 若被拦截，请在「系统设置 - 隐私与安全性」中点击「仍要打开」。
+          macOS 安装包未做签名与公证，首次双击若被拦截，请在「系统设置 - 隐私与安全性」中点击「仍要打开」。
 
           ---
 
-          > 安装遇到问题？请查看 [安装说明与常见问题](https://github.com/lucks-cloud/kiro-manager-lite/blob/main/INSTALL.md)。
+          > 安装遇到问题？请查看 [安装说明与常见问题](https://github.com/ZoroHasaky/KiroManagerLite/blob/main/INSTALL.md)。
           EOF
 
-      - name: 删除同标签旧 Release
+      - name: 删除同版本旧 Release
         uses: actions/github-script@v7
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
         with:
           script: |
+            const tag = `v${process.env.VERSION}`
             try {
               const { data: release } = await github.rest.repos.getReleaseByTag({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                tag: context.ref.replace('refs/tags/', '')
+                tag
               })
               await github.rest.repos.deleteRelease({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 release_id: release.id
               })
-              core.info(`已删除旧 Release：${release.tag_name}`)
+              core.info(`已删除同版本旧 Release：${release.tag_name}`)
             } catch (error) {
               if (error.status !== 404) throw error
-              core.info('未找到同标签旧 Release，继续首次发布')
+              core.info(`未找到 ${tag} 的旧 Release，继续首次发布`)
             }
 
       - uses: softprops/action-gh-release@v2
         with:
-          name: ${{ github.ref_name }}
+          # tag 用 VERSION 的值：应用内的「检查更新」比对的就是 tag 里的版本号，
+          # 两者必须一致，否则用户永远看不到新版本
+          tag_name: v${{ needs.detect.outputs.version }}
+          name: v${{ needs.detect.outputs.version }}
           body_path: NOTES.md
           files: artifacts/**
           fail_on_unmatched_files: true

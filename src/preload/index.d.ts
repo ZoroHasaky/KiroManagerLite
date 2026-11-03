@@ -56,11 +56,15 @@ import type {
   SocialCallbackPayload,
   LogQuery,
   LogQueryResult,
+  PaymentAddress,
+  PaymentStartInput,
+  PaymentUpdate,
   ProactiveRenewalPayload,
   SubscriptionEntry,
   SubscriptionPlan,
   SwitchAccountInput,
   SwitchAccountResult,
+  SwitchToFreeResult,
   TrayAction,
   TraySnapshot,
   UpdateCheckResult,
@@ -170,6 +174,21 @@ export interface Api {
   listSubscriptionPlans: (account: Account) => Promise<IpcResult<SubscriptionPlan[]>>
   /** 用内置浏览器打开链接 */
   openInAppBrowser: (url: string, title?: string) => Promise<IpcResult<{ url: string }>>
+
+  // 应用内支付：拉起外部 Chrome，自动填账单地址与卡信息
+  /** 可选的账单省份（中文名） */
+  getPaymentProvinces: () => Promise<IpcResult<string[]>>
+  /** 生成随机账单地址；province 为空则随机省份 */
+  generatePaymentAddress: (province?: string) => Promise<IpcResult<PaymentAddress>>
+  /** 打开浏览器并开始自动填充 */
+  openPayment: (payload: PaymentStartInput) => Promise<IpcResult<{ browser: string }>>
+  /** 关闭当前支付会话 */
+  closePayment: () => Promise<IpcResult>
+  /** 自动填充进度推送；返回取消订阅函数 */
+  onPaymentUpdate: (handler: (payload: PaymentUpdate) => void) => () => void
+
+  /** 把账号订阅切到 Kiro Free（Stripe 门户，纯 HTTP，不启动浏览器） */
+  switchSubscriptionToFree: (account: Account) => Promise<IpcResult<SwitchToFreeResult>>
 
   readLocalKiroCredentials: () => Promise<IpcResult<LocalKiroCredentials>>
   getActiveKiroToken: () => Promise<IpcResult<KiroActiveToken>>

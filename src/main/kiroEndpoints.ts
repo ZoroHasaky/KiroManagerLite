@@ -139,6 +139,25 @@ export const KIRO_OIDC_SCOPES = [
   'codewhisperer:taskassist'
 ]
 
+/*
+ * 官方 Amazon Q Developer CLI 注册客户端时用的身份。
+ *
+ * 在线登录（Builder ID 设备码流程）新建的账号，服务端会按签发客户端的身份决定能否
+ * 调订阅管理接口：实测同一批 Free 账号里，由官方 CLI 客户端签发的能正常取到订阅档位，
+ * 由本应用自建客户端签发的会回
+ *   401 UnauthorizedException: Authentication required or access denied.
+ * 所以注册时对齐官方 CLI 的名称与作用域（官方只申请下面 3 项）。
+ *
+ * clientId 由服务端每次随机生成，拿不到官方那个固定值；refresh token 又与签发它的
+ * clientId 绑定，因此这项改动只对改版后重新登录的账号生效，已有账号要重新添加。
+ */
+export const AMAZON_Q_CLI_CLIENT_NAME = 'Amazon Q Developer for command line'
+export const AMAZON_Q_CLI_OIDC_SCOPES = [
+  'codewhisperer:completions',
+  'codewhisperer:analysis',
+  'codewhisperer:conversations'
+]
+
 /** 接口只在这两个区域有部署，其它区域按地理位置就近归并 */
 type ServiceRegion = 'us-east-1' | 'eu-central-1'
 

@@ -305,8 +305,8 @@ function displayName(account: Account): string {
 }
 
 function jumpToAccounts(patch: Partial<AccountFilter>): void {
-  // 从首页点过去是「给我看这批账号」，遗留的分组筛选与批量查询会把结果挡掉，一并清空
-  accountsStore.applyFilter({ groupIds: [], queries: [], ...patch })
+  // 从首页点过去是「给我看这批账号」，遗留的阶段筛选与批量查询会把结果挡掉，一并清空
+  accountsStore.applyFilter({ groupIds: [], stages: [], queries: [], ...patch })
   void router.push({ name: 'accounts' })
 }
 

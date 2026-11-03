@@ -22,6 +22,13 @@ import {
 import { createAccountApiKey, deleteAccountApiKey, listAccountApiKeys } from './kiroApiKey'
 import { openAccountPortal, openInAppUrl } from './kiroPortal'
 import { createSubscriptionCheckout, getSubscriptionEntry, listSubscriptionPlans } from './kiroSubscription'
+import {
+  closePaymentSession,
+  startPaymentSession,
+  type PaymentStartInput
+} from './payment/session'
+import { generateBillingAddress, isValidProvince, listProvinces } from './payment/addressGen'
+import { switchSubscriptionToFree } from './subscriptionDowngrade'
 import { clearKiroSsoCache, readKiroAuthToken, readLocalKiroCredentials, ssoCacheFile } from './kiroAuth'
 import { restartKiroIde } from './kiroProcess'
 import { chatTraceOf, listKiroModels, streamApiKeyChat, streamKiroChat } from './kiroChat'
@@ -312,6 +319,32 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   /** 用内置浏览器打开链接（Stripe 账单 / 结算页） */
   handle('app:open-in-app-browser', (_e, url: string, title?: string) =>
     ok(openInAppUrl(url, title || 'Kiro'))
+  )
+
+  // ============ 应用内支付（外部 Chrome + CDP 自动填表） ============
+  /** 省份列表，供支付弹窗的下拉选择 */
+  handle('payment:provinces', () => ok(listProvinces()))
+
+  /** 生成一条随机账单地址；传省份则在该省内随机 */
+  handle('payment:generate-address', (_e, province?: string) =>
+    ok(generateBillingAddress(province && isValidProvince(province) ? province : undefined))
+  )
+
+  /** 打开外部浏览器并开始自动填充；返回用的哪个浏览器 */
+  handle('payment:open', async (_e, payload: PaymentStartInput) =>
+    ok(await startPaymentSession(payload, getWindow))
+  )
+
+  /** 关闭当前支付会话 */
+  handle('payment:close', async () => {
+    await closePaymentSession(getWindow)
+    return ok()
+  })
+
+  // ============ 订阅降级 ============
+  /** 把账号订阅切到 Kiro Free（Stripe 门户，纯 HTTP） */
+  handle('subscription:switch-to-free', async (_e, account: Account) =>
+    ok(await switchSubscriptionToFree(account))
   )
 
   handle('accounts:list-api-keys', async (_e, account: Account) => {

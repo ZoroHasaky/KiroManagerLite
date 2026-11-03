@@ -24,6 +24,7 @@ import {
 import { displayEmail, displayNote } from '@/utils/display'
 import { toPlain } from '@/utils/ipc'
 import { copyText, notifyResult } from '@/utils/ui'
+import { accountStageOf, ACCOUNT_STAGE_META } from '@shared/accountStage'
 import { regionLabel } from '@shared/regions'
 import type { Account } from '@shared/types'
 
@@ -54,11 +55,33 @@ const note = computed(() =>
   displayNote(account.value?.note, settingsStore.settings.privacyMode)
 )
 
+/** 当前阶段与支付链接：阶段由数据推导，链接是「待支付」的判定依据 */
+const stage = computed(() =>
+  account.value ? ACCOUNT_STAGE_META[accountStageOf(account.value)] : null
+)
+
+const paymentLink = computed(() => account.value?.paymentLink ?? '')
+
+function toggleSold(): void {
+  const target = account.value
+  if (!target) return
+  const sold = !target.soldAt
+  const changed = accountsStore.setSold([target.id], sold)
+  if (changed) message.success(sold ? '已标记为已出售' : '已取消出售标记')
+}
+
+function clearLink(): void {
+  const target = account.value
+  if (!target?.paymentLink) return
+  accountsStore.clearPaymentLink([target.id])
+  message.success('已清除支付链接')
+}
+
 /**
- * 抽屉宽度：与 API Key 详情抽屉同一口径。
- * 窄窗口下退回视口的 92%，避免抽屉宽过窗口本身。
+ * 弹窗宽度：与账号列表里其它弹窗同一口径。
+ * 窄窗口下退回视口的 92%，避免弹窗宽过窗口本身。
  */
-const drawerWidth = computed(() => Math.min(720, Math.round(window.innerWidth * 0.92)))
+const modalWidth = computed(() => Math.min(720, Math.round(window.innerWidth * 0.92)))
 
 const tokenExpiry = computed(() => {
   const expiresAt = account.value?.credentials.expiresAt
@@ -129,12 +152,14 @@ async function act(kind: 'refresh' | 'check' | 'switch'): Promise<void> {
 </script>
 
 <template>
-  <a-drawer
+  <a-modal
     :open="!!account"
-    :title="email || '账号详情'"
-    :width="drawerWidth"
-    placement="right"
-    @close="emit('close')"
+    :title="email || '账号信息'"
+    :width="modalWidth"
+    :footer="null"
+    centered
+    :body-style="{ maxHeight: 'calc(100dvh - 160px)', overflowY: 'auto' }"
+    @cancel="emit('close')"
   >
     <template v-if="account">
       <a-space style="margin-bottom: 16px" wrap>
@@ -151,6 +176,9 @@ async function act(kind: 'refresh' | 'check' | 'switch'): Promise<void> {
           <template #icon><DownloadOutlined /></template>
           导出
         </a-button>
+        <a-button @click="toggleSold">
+          {{ account.soldAt ? '取消已出售' : '标记为已出售' }}
+        </a-button>
       </a-space>
 
       <a-alert
@@ -163,6 +191,10 @@ async function act(kind: 'refresh' | 'check' | 'switch'): Promise<void> {
 
       <div class="section-title">基本信息</div>
       <a-descriptions :column="1" size="small" bordered style="margin-bottom: 18px">
+        <a-descriptions-item label="阶段">
+          <a-tag v-if="stage" :color="stage.color">{{ stage.text }}</a-tag>
+          <span class="muted" style="margin-left: 8px">{{ stage?.hint }}</span>
+        </a-descriptions-item>
         <a-descriptions-item label="状态">
           <a-tag :color="STATUS_META[account.status].color">{{ STATUS_META[account.status].text }}</a-tag>
           <a-tag v-if="account.isActive" color="green">IDE 当前</a-tag>
@@ -198,6 +230,17 @@ async function act(kind: 'refresh' | 'check' | 'switch'): Promise<void> {
           <span v-if="account.subscription.daysRemaining !== undefined" class="muted">
             （{{ account.subscription.daysRemaining }} 天后）
           </span>
+        </a-descriptions-item>
+        <a-descriptions-item label="支付链接">
+          <template v-if="paymentLink">
+            <span class="mono link-text">{{ paymentLink }}</span>
+            <a-button type="link" size="small" @click="copy('支付链接', paymentLink)">复制</a-button>
+            <a-button type="link" size="small" danger @click="clearLink">清除</a-button>
+          </template>
+          <span v-else class="muted">未生成</span>
+        </a-descriptions-item>
+        <a-descriptions-item v-if="account.soldAt" label="出售时间">
+          {{ formatDateTime(account.soldAt) }}
         </a-descriptions-item>
       </a-descriptions>
 
@@ -283,5 +326,13 @@ async function act(kind: 'refresh' | 'check' | 'switch'): Promise<void> {
         :selected-ids="[account.id]"
       />
     </template>
-  </a-drawer>
+  </a-modal>
 </template>
+
+<style scoped>
+/* 支付链接可能很长：允许换行，不要撑破弹窗 */
+.link-text {
+  word-break: break-all;
+  font-size: 12px;
+}
+</style>

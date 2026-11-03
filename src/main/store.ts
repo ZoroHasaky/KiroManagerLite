@@ -20,6 +20,7 @@ import {
   type SubscriptionType
 } from '../shared/types'
 import { normalizeSubscriptionType } from '../shared/subscription'
+import { normalizeNotePresets } from '../shared/notePresets'
 
 /** permissions.yaml 开启前的原始状态 */
 export interface ShellApproveYamlBackup {
@@ -547,11 +548,15 @@ export function getSettings(): AppSettings {
   }
   // 存值不是十六进制色值（如 system）时回到默认紫
   if (!/^#[0-9a-f]{6}$/i.test(merged.primaryColor)) merged.primaryColor = DEFAULT_PRIMARY_COLOR
+  // 手改过的配置里可能有空串或重复项，界面拿到的必须是干净的一份
+  merged.notePresets = normalizeNotePresets(merged.notePresets)
   return merged
 }
 
 export function setSettings(settings: Partial<AppSettings>): AppSettings {
   const merged = { ...getSettings(), ...settings }
+  // 渲染进程可能一次提交整份数组（比如删除常用备注），这里同样兜一次
+  merged.notePresets = normalizeNotePresets(merged.notePresets)
   write('settings', merged)
   return merged
 }

@@ -1,24 +1,22 @@
 <script setup lang="ts">
 import { computed, h, ref, toRef, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import {
-  AppstoreOutlined,
-  CodeOutlined,
   CrownOutlined,
   DeleteOutlined,
   DownOutlined,
   DownloadOutlined,
   EditOutlined,
-  EyeInvisibleOutlined,
-  EyeOutlined,
   FileSearchOutlined,
   FilterOutlined,
-  InboxOutlined,
   KeyOutlined,
   PlusOutlined,
   RestOutlined,
   RollbackOutlined,
+  SearchOutlined,
   SyncOutlined,
+  TagOutlined,
   UploadOutlined
 } from '@ant-design/icons-vue'
 import AccountCard from '@/components/accounts/AccountCard.vue'
@@ -26,39 +24,27 @@ import CardContextMenu, { type ContextMenuItem } from '@/components/common/CardC
 import TrashToggle from '@/components/common/TrashToggle.vue'
 import BatchQueryModal from '@/components/common/BatchQueryModal.vue'
 import BatchQueryTag from '@/components/common/BatchQueryTag.vue'
-import SearchScopeInput, {
-  type SearchScopeOption
-} from '@/components/common/SearchScopeInput.vue'
-import { useRecentUsage } from '@/composables/useRecentUsage'
 import { useCardContextMenu } from '@/composables/useCardContextMenu'
 import AccountFilterPanel from '@/components/accounts/AccountFilterPanel.vue'
 import VirtualGrid from '@/components/common/VirtualGrid.vue'
 import AddAccountModal from '@/components/accounts/AddAccountModal.vue'
-import ImportAccountsFileModal from '@/components/accounts/ImportAccountsFileModal.vue'
-import ImportAccountsTextModal from '@/components/accounts/ImportAccountsTextModal.vue'
+import ImportAccountsModal from '@/components/accounts/ImportAccountsModal.vue'
 import ExportAccountsModal from '@/components/accounts/ExportAccountsModal.vue'
 import EditAccountModal from '@/components/accounts/EditAccountModal.vue'
 import BatchNoteModal from '@/components/common/BatchNoteModal.vue'
-import GroupPickerModal from '@/components/common/GroupPickerModal.vue'
-import GroupPanel from '@/components/common/GroupPanel.vue'
-import GroupManageModal from '@/components/common/GroupManageModal.vue'
 import BatchCreateApiKeyModal from '@/components/accounts/BatchCreateApiKeyModal.vue'
-import BatchSubscriptionModal from '@/components/accounts/BatchSubscriptionModal.vue'
-import SortMenu from '@/components/common/SortMenu.vue'
 import { useRangeSelect } from '@/utils/rangeSelect'
-import { DEFAULT_SORT, SORT_FIELDS, compareBy, type SortField, type SortKey } from '@/utils/listSort'
-import DisplayModeSelect from '@/components/common/DisplayModeSelect.vue'
-import AccountDetailDrawer from '@/components/accounts/AccountDetailDrawer.vue'
+import AccountInfoModal from '@/components/accounts/AccountInfoModal.vue'
 import AccountTestModal from '@/components/accounts/AccountTestModal.vue'
 import CreateApiKeyModal from '@/components/accounts/CreateApiKeyModal.vue'
 import UsageHistoryModal from '@/components/accounts/UsageHistoryModal.vue'
 import SubscriptionModal from '@/components/accounts/SubscriptionModal.vue'
+import PayInAppModal from '@/components/accounts/PayInAppModal.vue'
 import SwitchResultModal from '@/components/accounts/SwitchResultModal.vue'
 import { useAccountsStore } from '@/stores/accounts'
 import { useSettingsStore } from '@/stores/settings'
 import { displayEmail as maskedEmail } from '@/utils/display'
 import { NO_BATCH_QUERY_HITS } from '@/utils/batchQuery'
-import { accountGroupApi } from '@/utils/groupApi'
 import { toPlain } from '@/utils/ipc'
 import { buildExportContent } from '@/utils/transfer'
 import {
@@ -69,6 +55,7 @@ import {
   notifyResult
 } from '@/utils/ui'
 import { shouldSkipAccountUsageRefresh } from '@shared/refreshPolicy'
+import { ACCOUNT_STAGE_META, ACCOUNT_STAGES, type AccountStage } from '@shared/accountStage'
 import { isTrashed } from '@shared/itemGroups'
 import type { Account, AccountDisplayMode, SwitchAccountResult } from '@shared/types'
 
@@ -82,20 +69,23 @@ const settingsStore = useSettingsStore()
 const toolbarSize = computed(() => settingsStore.toolbarSize)
 
 const addOpen = ref(false)
-/** 导入拆成两个入口：拖拽文件、粘贴文本 */
-const importFileOpen = ref(false)
-const importTextOpen = ref(false)
+/** 导入：单个弹窗，文件与 JSON 两种方式在同一界面里同时可用 */
+const importOpen = ref(false)
 
-/** 「添加账号」弹窗里的导入入口：它会先关掉自己，这里只负责打开对应的导入弹窗 */
-function openImport(kind: 'file' | 'text'): void {
-  if (kind === 'file') importFileOpen.value = true
-  else importTextOpen.value = true
+/** 「添加账号」弹窗里的导入入口：它会先关掉自己，这里打开导入弹窗 */
+function openImport(): void {
+  importOpen.value = true
 }
 const exportOpen = ref(false)
 const batchNoteOpen = ref(false)
-const batchGroupOpen = ref(false)
 const batchApiKeyOpen = ref(false)
-const batchSubscriptionOpen = ref(false)
+
+const router = useRouter()
+
+/** 批量生成订阅链接已独立成「订阅管理」页面，跳过去继续操作 */
+function goSubscription(): void {
+  void router.push({ name: 'subscription' })
+}
 
 /** 批量生成 Key / 订阅链接的目标：全部勾选项，按界面当前排序，被筛掉的勾选项排在后面 */
 const batchTargets = computed(() => {
@@ -112,7 +102,7 @@ const batchTargets = computed(() => {
   ]
 })
 const editTarget = ref<Account | null>(null)
-const detailTarget = ref<Account | null>(null)
+const infoTarget = ref<Account | null>(null)
 const testTarget = ref<Account | null>(null)
 const apiKeyTarget = ref<Account | null>(null)
 const usageTarget = ref<Account | null>(null)
@@ -122,8 +112,6 @@ const rowBusy = ref<Record<string, string | undefined>>({})
 /** 批量操作的进度文案，配合下面的函数式组件在 message 里实时刷新 */
 const batchProgress = ref('')
 const BatchProgressText = (): ReturnType<typeof h> => h('span', null, batchProgress.value)
-
-const sortKey = ref<SortKey>(DEFAULT_SORT)
 
 const busy = computed(() => accountsStore.task.running)
 /**
@@ -139,28 +127,23 @@ const usageRefreshing = computed(
 )
 const refreshing = computed(() => keyRefreshing.value || usageRefreshing.value)
 
-/** 菜单按钮上直接反映正在跑的那条任务，不必展开菜单才知道进度 */
+/**
+ * 菜单按钮上直接反映正在跑的那条任务，不必展开菜单才知道进度。
+ * 具体跑哪一种由下拉里选，按钮本身只写「刷新」。
+ */
 const refreshButtonText = computed(() => {
   if (keyRefreshing.value) return '正在刷新密钥...'
   if (usageRefreshing.value) {
     const count = accountsStore.selectedIds.length
     const scope = count ? `${count}个账户` : ''
-    return `正在刷新${scope}用量/积分...`
+    return `正在刷新${scope}用量...`
   }
-  return `刷新密钥/用量/积分${batchScopeSuffix.value}`
+  return '刷新'
 })
 
 const stats = computed(() => accountsStore.stats)
 
 const filterOpen = ref(false)
-const groupOpen = ref(false)
-const groupManageOpen = ref(false)
-
-/** 打开分组管理弹窗：先收起筛选浮层，免得两层叠在一起 */
-function openGroupManage(): void {
-  groupOpen.value = false
-  groupManageOpen.value = true
-}
 
 /** 筛选面板里生效的条件数量，显示在筛选按钮的角标上 */
 const activeFilterCount = computed(() => {
@@ -169,7 +152,7 @@ const activeFilterCount = computed(() => {
     f.statuses.length +
     f.subscriptions.length +
     f.idps.length +
-    // 分组筛选另有独立按钮与角标，这里不重复计入，只在「清除筛选」时一并清掉
+    // 阶段 tab 是独立的入口，有自己的选中态，这里不重复计入
     // != null：输入框清空时给的是 null，按 !== undefined 判断会把它算成一个生效条件
     (f.usageMin != null ? 1 : 0) +
     (f.usageMax != null ? 1 : 0) +
@@ -184,37 +167,38 @@ function clearFilter(): void {
   accountsStore.applyFilter({ search: accountsStore.filter.search })
 }
 
-/** 与设置页的「隐私打码」是同一个开关，这里切换会一起持久化 */
+/** 隐私打码与展示形态都在设置页里，这里只读取，不改 */
 const privacyMode = computed(() => settingsStore.settings.privacyMode)
 
-function togglePrivacy(): void {
-  void settingsStore.update({ privacyMode: !privacyMode.value })
-}
-
-/** 展示形态：卡片 / 紧凑卡片 / 列表，和隐私打码一样持久化在设置里 */
+/** 展示形态：卡片 / 紧凑卡片 / 列表，选择在设置页持久化 */
 const displayMode = computed(() => settingsStore.settings.accountDisplayMode)
 
-function setDisplayMode(mode: AccountDisplayMode): void {
-  void settingsStore.update({ accountDisplayMode: mode })
+/**
+ * 阶段 tab：未使用 / 待支付 / 已订阅 / 已出售 / 已闲置。
+ * 单选：点同一个 tab 取消（回到「全部」），点别的 tab 直接切过去。
+ * 阶段由账号数据推导（见 shared/accountStage），不落盘，也不需要用户维护。
+ *
+ * 勾选只在当前分组内有效：切换分组时清空已勾选项，避免「以为只选了 A 组，
+ * 实际把 B 组里同名同邮箱的账号也一起批量操作了」这类误伤。
+ */
+const activeStage = computed<AccountStage | null>(() => accountsStore.filter.stages[0] ?? null)
+
+/** 切换阶段（'all' 表示回到全部）；分组变了就清空勾选 */
+function selectStage(stage: AccountStage | 'all'): void {
+  const next: AccountStage[] = stage === 'all' || activeStage.value === stage ? [] : [stage]
+  if (next[0] === activeStage.value) return
+  accountsStore.filter.stages = next
+  clearSelection()
 }
 
-/** 分组读写门面：面板与批量弹窗都用它，屏蔽「账号同步写 / Key 走 IPC」的差异 */
-const groupApi = accountGroupApi()
-
-function toggleGroupFilter(id: string): void {
-  const list = accountsStore.filter.groupIds
-  accountsStore.filter.groupIds = list.includes(id)
-    ? list.filter((v) => v !== id)
-    : [...list, id]
+/** 清空勾选，并重置范围勾选的锚点 */
+function clearSelection(): void {
+  accountsStore.selectedIds = []
+  resetAnchor()
 }
 
-/** 搜索范围：默认智能搜索（邮箱 + 昵称 + 备注），也可以只搜某一个字段 */
-const SEARCH_SCOPES: SearchScopeOption[] = [
-  { value: 'all', label: '智能搜索', placeholder: '搜索邮箱 / 昵称 / 备注' },
-  { value: 'email', label: '邮箱', placeholder: '只搜邮箱' },
-  { value: 'nickname', label: '昵称', placeholder: '只搜昵称' },
-  { value: 'note', label: '备注', placeholder: '只搜备注' }
-]
+/** 搜索固定为智能搜索（邮箱 + 昵称 + 备注），不再提供字段切换 */
+const SEARCH_PLACEHOLDER = '搜索邮箱 / 昵称 / 备注'
 
 // ============ 批量查询 ============
 const batchQueryOpen = ref(false)
@@ -231,24 +215,15 @@ function applyBatchQuery(values: string[]): void {
 }
 
 /**
- * 右键「设置备注 / 设置分组」只作用于那一个账号，和批量入口共用同一个弹窗。
+ * 右键「设置备注」只作用于那一个账号，和批量入口共用同一个弹窗。
  * 有值时弹窗的目标就是它，否则是全部勾选项。
  */
 const noteTarget = ref<Account | null>(null)
-const groupTarget = ref<Account | null>(null)
 const noteIds = computed(() => (noteTarget.value ? [noteTarget.value.id] : accountsStore.selectedIds))
-const groupPickIds = computed(() =>
-  groupTarget.value ? [groupTarget.value.id] : accountsStore.selectedIds
-)
 
 function closeNote(): void {
   batchNoteOpen.value = false
   noteTarget.value = null
-}
-
-function closeGroupPicker(): void {
-  batchGroupOpen.value = false
-  groupTarget.value = null
 }
 
 /** 批量备注：覆盖式改写所选账号的备注，留空即清空 */
@@ -288,47 +263,26 @@ const gridLayout = computed(() => {
   switch (displayMode.value) {
     case 'compact':
       // 用量块压成两行后比卡片模式矮不少，首帧的预估值跟着调低
-      return { minColumnWidth: 320, estimatedHeight: 235 }
+      return { minColumnWidth: 320, estimatedHeight: 219 }
     case 'list':
       // 用量块两行排布，一条约 70px，预估值按此取
       return { minColumnWidth: 100000, estimatedHeight: 76 }
     default:
-      return { minColumnWidth: 320, estimatedHeight: 330 }
+      return { minColumnWidth: 320, estimatedHeight: 314 }
   }
 })
 
-/*
- * 近半小时 / 近 1 小时积分用量：只在选了这两种排序时向主进程批量取。
- * 账号数据整组替换即表示有刷新结果写回（用量可能变了），据此重取。
+/**
+ * 列表顺序：添加时间降序（新的在前）。
+ *
+ * 排序菜单已从工具栏移除，排序方式固定成这一种。IDE 当前账号始终置顶，
+ * 不管它是什么时候加的——用户第一眼要看到的就是正在用的那个号。
  */
-const recentUsage = useRecentUsage({
-  sortKey,
-  subjectIds: () => accountsStore.filtered.map((a) => a.id),
-  version: () => accountsStore.accounts
-})
-
-/** 排序取值：重置取剩余天数，Token 取 access token 过期时刻 */
-function accountSortValue(account: Account, field: SortField): number | string | undefined {
-  if (field === 'email') return account.email
-  // 没有积分变化记录的账号算缺值，排到最后；有记录但这段时间没消耗的是 0
-  if (field === 'recent30' || field === 'recent60') return recentUsage.valueOf(account.id, field)
-  // 没拉到过额度（limit 为 0）的账号三项积分都算缺值，排到最后
-  const synced = account.usage.limit > 0
-  if (field === 'usage') return synced ? account.usage.percentUsed : undefined
-  if (field === 'usedCredits') return synced ? account.usage.current : undefined
-  if (field === 'remainingCredits') return synced ? account.usage.limit - account.usage.current : undefined
-  if (field === 'reset') return account.subscription.daysRemaining ?? undefined
-  if (field === 'token') return account.credentials.expiresAt || undefined
-  return account.createdAt || 0
-}
-
-const sorted = computed(() => {
-  const compare = compareBy(sortKey.value, accountSortValue, (a: Account) => a.createdAt || 0)
-  // IDE 当前账号始终置顶，其余按所选排序
-  return [...accountsStore.filtered].sort(
-    (a, b) => Number(b.isActive) - Number(a.isActive) || compare(a, b)
+const sorted = computed(() =>
+  [...accountsStore.filtered].sort(
+    (a, b) => Number(b.isActive) - Number(a.isActive) || (b.createdAt || 0) - (a.createdAt || 0)
   )
-})
+)
 
 /** 网格数据：账号卡片 + 末尾一张「添加账号」卡 */
 type GridItem = { kind: 'account'; account: Account } | { kind: 'add' }
@@ -346,7 +300,7 @@ function gridItemKey(item: GridItem): string {
 const gridRef = ref<{ scrollToTop: () => void } | null>(null)
 
 /**
- * 回到顶部的触发条件：筛选条件（含搜索词）或排序方式变化。
+ * 回到顶部的触发条件：筛选条件（含搜索词）或回收站切换。
  *
  * 这里必须用「值快照」而不是把 sorted.length 之类的派生值塞进 watch 源：
  * 自动刷新会整体替换账号数据，派生的计算属性随之重算，
@@ -354,7 +308,7 @@ const gridRef = ref<{ scrollToTop: () => void } | null>(null)
  * 表现就是滚动中莫名跳回顶部。
  */
 const scrollResetKey = computed(() =>
-  JSON.stringify([accountsStore.filter, sortKey.value, accountsStore.trashView])
+  JSON.stringify([accountsStore.filter, accountsStore.trashView])
 )
 
 watch(scrollResetKey, () => gridRef.value?.scrollToTop())
@@ -393,14 +347,17 @@ function updateSelection(mutate: (set: Set<string>) => void): void {
   accountsStore.selectedIds = [...set]
 }
 
-/** 单击勾选；按住 Shift 勾选一段，Ctrl / Cmd + A 勾选当前筛选结果（见 rangeSelect） */
-const { toggle: toggleSelect } = useRangeSelect({
+/** 单击勾选；按住 Shift 勾选一段，Ctrl / Cmd + A 勾选当前筛选结果，Esc 取消全部（见 rangeSelect） */
+const { toggle: toggleSelect, resetAnchor } = useRangeSelect({
   order: () => sorted.value.map((account) => account.id),
   apply: (ids, checked) =>
     updateSelection((set) => {
       for (const id of ids) checked ? set.add(id) : set.delete(id)
     }),
-  selectAll: () => toggleSelectVisible(true)
+  selectAll: () => toggleSelectVisible(true),
+  clear: () => {
+    accountsStore.selectedIds = []
+  }
 })
 
 /** 全选 / 取消全选当前筛选结果 */
@@ -462,6 +419,9 @@ async function openPortal(account: Account): Promise<void> {
  */
 const subscriptionTarget = ref<Account | null>(null)
 
+/** 点「待支付」阶段标签要付款的账号：弹窗里拉起外部 Chrome 自动填表 */
+const payTarget = ref<Account | null>(null)
+
 /**
  * 复制凭证 JSON。
  *
@@ -504,7 +464,7 @@ async function switchTo(account: Account): Promise<void> {
 function clearDeletedAccountUi(ids: string[]): void {
   const deleted = new Set(ids)
   if (editTarget.value && deleted.has(editTarget.value.id)) editTarget.value = null
-  if (detailTarget.value && deleted.has(detailTarget.value.id)) detailTarget.value = null
+  if (infoTarget.value && deleted.has(infoTarget.value.id)) infoTarget.value = null
   if (testTarget.value && deleted.has(testTarget.value.id)) testTarget.value = null
   if (usageTarget.value && deleted.has(usageTarget.value.id)) usageTarget.value = null
   const nextBusy = { ...rowBusy.value }
@@ -581,15 +541,18 @@ function removeSelected(): void {
 function toggleTrashView(): void {
   accountsStore.trashView = !accountsStore.trashView
   accountsStore.selectedIds = []
+  // 阶段 tab 在回收站里不显示，残留的筛选会让列表看起来是空的
+  accountsStore.filter.stages = []
 }
 
 // ============ 右键菜单 ============
 
 const normalMenu: ContextMenuItem[] = [
   { key: 'note', label: '设置备注', icon: EditOutlined },
-  { key: 'group', label: '设置分组', icon: AppstoreOutlined },
   { key: 'apikey', label: '生成 API Key', icon: KeyOutlined },
   { key: 'subscription', label: '获取订阅链接', icon: CrownOutlined },
+  { key: 'sold', label: '标记为已出售', icon: TagOutlined },
+  { key: 'unsold', label: '取消已出售', icon: TagOutlined },
   { key: 'trash', label: '放入回收站', icon: RestOutlined, divided: true },
   { key: 'remove', label: '删除该账号', icon: DeleteOutlined, danger: true }
 ]
@@ -606,14 +569,16 @@ const contextIds = contextMenu.highlight
 
 /**
  * 卡片上「打开某个弹窗」类事件的稳定处理器。
- * 模板里写 `@detail="detailTarget = item.account"` 会在每次渲染生成新的箭头函数，
+ * 模板里写 `@info="infoTarget = item.account"` 会在每次渲染生成新的箭头函数，
  * 虚拟滚动里每张可见卡片都因此被判定 props 变化而整卡重新 patch；
  * 换成这里固定的函数引用后，只有数据真正变了的卡片才会更新。
  */
 const cardHandlers = {
-  detail: (account: Account) => (detailTarget.value = account),
+  info: (account: Account) => (infoTarget.value = account),
+  copyEmail: (account: Account) => copyText(account.email, '邮箱已复制'),
   createApiKey: (account: Account) => (apiKeyTarget.value = account),
   subscription: (account: Account) => (subscriptionTarget.value = account),
+  pay: (account: Account) => (payTarget.value = account),
   edit: (account: Account) => (editTarget.value = account),
   test: (account: Account) => (testTarget.value = account),
   usage: (account: Account) => (usageTarget.value = account)
@@ -637,13 +602,25 @@ function onContextMenu(key: string): void {
   // 多项时勾选集合就是这批目标（见 useCardContextMenu），直接复用各个批量入口
   const multi = ids.length > 1
   if (key === 'note') multi ? (batchNoteOpen.value = true) : (noteTarget.value = account)
-  else if (key === 'group') multi ? (batchGroupOpen.value = true) : (groupTarget.value = account)
   else if (key === 'apikey') multi ? (batchApiKeyOpen.value = true) : (apiKeyTarget.value = account)
   else if (key === 'subscription') {
-    multi ? (batchSubscriptionOpen.value = true) : (subscriptionTarget.value = account)
-  } else if (key === 'trash') moveToTrash([...ids], true)
+    // 批量生成订阅链接在「订阅管理」页面统一做，这里多选时直接跳过去
+    multi ? goSubscription() : (subscriptionTarget.value = account)
+  } else if (key === 'sold') markSold([...ids], true)
+  else if (key === 'unsold') markSold([...ids], false)
+  else if (key === 'trash') moveToTrash([...ids], true)
   else if (key === 'restore') moveToTrash([...ids], false)
   else if (key === 'remove') multi ? removeSelected() : removeOne(account)
+}
+
+/**
+ * 标记 / 取消「已出售」。
+ * 标记后阶段固定为「已出售」，且清掉支付链接（卖掉的账号不该继续留在「待支付」）。
+ */
+function markSold(ids: string[], sold: boolean): void {
+  const changed = accountsStore.setSold(ids, sold)
+  if (!changed) return void message.info(sold ? '所选账号都已标记为已出售' : '所选账号都未标记出售')
+  message.success(sold ? `已将 ${changed} 个账号标记为已出售` : `已取消 ${changed} 个账号的出售标记`)
 }
 
 async function batch(kind: 'refresh' | 'check'): Promise<void> {
@@ -735,11 +712,14 @@ function logoutIde(account: Account): void {
             <template #icon><FileSearchOutlined /></template>
           </a-button>
         </a-tooltip>
-        <SearchScopeInput
+        <a-input
           v-model:value="accountsStore.filter.search"
-          v-model:scope="accountsStore.filter.searchScope"
-          :options="SEARCH_SCOPES"
-        />
+          allow-clear
+          :placeholder="SEARCH_PLACEHOLDER"
+          class="search-input"
+        >
+          <template #prefix><SearchOutlined /></template>
+        </a-input>
         <BatchQueryTag
           v-if="accountsStore.filter.queries.length"
           :total="accountsStore.filter.queries.length"
@@ -755,48 +735,47 @@ function logoutIde(account: Account): void {
           <template #icon><PlusOutlined /></template>
           添加账号
         </a-button>
-        <a-dropdown>
-          <a-button>
-            <template #icon><UploadOutlined /></template>
-            导入
-            <DownOutlined />
-          </a-button>
-          <template #overlay>
-            <a-menu>
-              <a-menu-item key="file" @click="importFileOpen = true">
-                <InboxOutlined />
-                从文件导入
-              </a-menu-item>
-              <a-menu-item key="text" @click="importTextOpen = true">
-                <CodeOutlined />
-                输入 JSON 导入
-              </a-menu-item>
-            </a-menu>
-          </template>
-        </a-dropdown>
+        <a-button @click="importOpen = true">
+          <template #icon><UploadOutlined /></template>
+          导入
+        </a-button>
         <a-button @click="exportOpen = true">
           <template #icon><DownloadOutlined /></template>
           导出
         </a-button>
       </div>
 
-      <!-- 第二行：统计 + 筛选 / 排序 / 批量 / 选择 -->
+      <!-- 阶段 tab：固定的五个业务阶段，单选，点当前 tab 取消回到「全部」 -->
+      <div v-if="!accountsStore.trashView" class="stage-tabs">
+        <button
+          class="stage-tab"
+          :class="{ on: activeStage === null }"
+          @click="selectStage('all')"
+        >
+          全部
+          <span class="stage-count">{{ stats.total }}</span>
+        </button>
+        <a-tooltip v-for="stage in ACCOUNT_STAGES" :key="stage" :title="ACCOUNT_STAGE_META[stage].hint">
+          <button
+            class="stage-tab"
+            :class="{ on: activeStage === stage }"
+            @click="selectStage(stage)"
+          >
+            {{ ACCOUNT_STAGE_META[stage].text }}
+            <span class="stage-count">{{ stats.byStage[stage] }}</span>
+          </button>
+        </a-tooltip>
+      </div>
+
+      <!--
+        第二行：筛选 / 刷新 / 批量 / 全选，全部从左侧起依次向右排。
+        这里不放开头的 spacer：这排是操作区，不是「左边信息、右边按钮」的布局，
+        留白会把按钮推到右边、和左侧阶段 tab 的起点对不齐。
+      -->
       <div class="meta-bar">
-        <span class="count-text">共 {{ sorted.length }} 个账号</span>
-        <a-tag v-if="stats.byStatus.active" color="green" :bordered="false">
-          正常 {{ stats.byStatus.active }}
-        </a-tag>
-        <a-tag v-if="stats.byStatus.error + stats.byStatus.banned" color="red" :bordered="false">
-          异常 {{ stats.byStatus.error + stats.byStatus.banned }}
-        </a-tag>
-        <a-tag v-if="stats.expiringSoon" color="orange" :bordered="false">
-          7 天内重置 {{ stats.expiringSoon }}
-        </a-tag>
         <a-tag v-if="activeFilterCount" color="purple" closable @close="clearFilter">
           筛选中 {{ activeFilterCount }} 项
         </a-tag>
-
-        <span class="toolbar-spacer" />
 
         <a-popover
           v-model:open="filterOpen"
@@ -818,38 +797,6 @@ function logoutIde(account: Account): void {
           </a-badge>
         </a-popover>
 
-        <a-popover
-          :open="groupOpen"
-          trigger="click"
-          placement="bottomRight"
-          :get-popup-container="bodyPopupContainer"
-          @open-change="(open: boolean) => (groupOpen = open)"
-        >
-          <template #content>
-            <GroupPanel
-              v-if="groupOpen"
-              :api="groupApi"
-              :selected="accountsStore.filter.groupIds"
-              :matched="accountsStore.filtered.length"
-              entity="账号"
-              @toggle="toggleGroupFilter"
-              @clear="accountsStore.filter.groupIds = []"
-              @manage="openGroupManage"
-            />
-          </template>
-          <a-badge :count="accountsStore.filter.groupIds.length" :offset="[-4, 4]">
-            <a-button
-              :size="toolbarSize"
-              :type="accountsStore.filter.groupIds.length ? 'primary' : 'default'"
-            >
-              <template #icon><AppstoreOutlined /></template>
-              分组
-            </a-button>
-          </a-badge>
-        </a-popover>
-
-        <SortMenu v-model="sortKey" :fields="SORT_FIELDS" :size="toolbarSize" />
-
         <a-divider type="vertical" style="margin: 0 2px" />
 
         <!-- 两种刷新收进同一个菜单：它们互斥，全局任务状态一次只容得下一条 -->
@@ -863,29 +810,36 @@ function logoutIde(account: Account): void {
             <a-menu>
               <a-menu-item key="refresh" @click="batch('refresh')">
                 <KeyOutlined />
-                刷新密钥{{ batchScopeSuffix }}
+                密钥{{ batchScopeSuffix }}
               </a-menu-item>
               <a-menu-item key="check" @click="batch('check')">
                 <SyncOutlined />
-                刷新用量与积分{{ batchScopeSuffix }}
+                用量{{ batchScopeSuffix }}
               </a-menu-item>
             </a-menu>
           </template>
         </a-dropdown>
-        <a-button
-          :size="toolbarSize"
-          :type="privacyMode ? 'primary' : 'default'"
-          @click="togglePrivacy"
-        >
-          <template #icon>
-            <EyeInvisibleOutlined v-if="privacyMode" />
-            <EyeOutlined v-else />
-          </template>
-          {{ privacyMode ? '隐私打码中' : '隐私打码' }}
-        </a-button>
 
-        <!-- 展示形态：卡片 / 紧凑卡片 / 列表，选择会持久化 -->
-        <DisplayModeSelect :value="displayMode" :size="toolbarSize" @change="setDisplayMode" />
+        <!-- 全选紧跟刷新：它属于「选择」这一步，位置不该被后面条件出现的批量按钮推走 -->
+        <a-divider type="vertical" style="margin: 0 2px" />
+
+        <a-checkbox
+          :checked="allVisibleSelected"
+          :indeterminate="someVisibleSelected"
+          :disabled="sorted.length === 0"
+          @change="(e: any) => toggleSelectVisible(e.target.checked)"
+        >
+          全选
+        </a-checkbox>
+        <template v-if="accountsStore.selectedIds.length">
+          <span class="count-text">已选 {{ accountsStore.selectedIds.length }}</span>
+          <a-button type="link" :size="toolbarSize" @click="accountsStore.selectedIds = []">
+            清空
+          </a-button>
+        </template>
+
+        <a-divider type="vertical" style="margin: 0 2px" />
+
         <!-- 回收站为空时不显示；正在看回收站时保留，否则清空后就没有返回入口了 -->
         <TrashToggle
           v-if="accountsStore.trashedCount || accountsStore.trashView"
@@ -917,15 +871,20 @@ function logoutIde(account: Account): void {
                 <EditOutlined />
                 批量设置备注
               </a-menu-item>
-              <a-menu-item key="group" @click="batchGroupOpen = true">
-                <AppstoreOutlined />
-                批量设置分组
+              <a-menu-item key="sold" @click="markSold([...accountsStore.selectedIds], true)">
+                <TagOutlined />
+                批量标记为已出售
+              </a-menu-item>
+              <a-menu-item key="unsold" @click="markSold([...accountsStore.selectedIds], false)">
+                <TagOutlined />
+                批量取消已出售
               </a-menu-item>
               <a-menu-item key="apikey" @click="batchApiKeyOpen = true">
                 <KeyOutlined />
                 批量生成 API Key
               </a-menu-item>
-              <a-menu-item key="subscription" @click="batchSubscriptionOpen = true">
+              <!-- 批量生成订阅链接已独立成「订阅管理」页面，这里只负责跳过去 -->
+              <a-menu-item key="subscription" @click="goSubscription">
                 <CrownOutlined />
                 批量生成订阅链接
               </a-menu-item>
@@ -942,23 +901,6 @@ function logoutIde(account: Account): void {
           <template #icon><DeleteOutlined /></template>
           {{ accountsStore.trashView ? '彻底删除' : '删除' }}（{{ accountsStore.selectedIds.length }}个）
         </a-button>
-
-        <a-divider type="vertical" style="margin: 0 2px" />
-
-        <a-checkbox
-          :checked="allVisibleSelected"
-          :indeterminate="someVisibleSelected"
-          :disabled="sorted.length === 0"
-          @change="(e: any) => toggleSelectVisible(e.target.checked)"
-        >
-          全选
-        </a-checkbox>
-        <template v-if="accountsStore.selectedIds.length">
-          <span class="count-text">已选 {{ accountsStore.selectedIds.length }}</span>
-          <a-button type="link" :size="toolbarSize" @click="accountsStore.selectedIds = []">
-            清空
-          </a-button>
-        </template>
       </div>
     </div>
 
@@ -1006,10 +948,12 @@ function logoutIde(account: Account): void {
           :busy-action="rowBusy[item.account.id]"
           :mode="displayMode"
           @toggle-select="toggleSelect"
-          @detail="cardHandlers.detail"
+          @info="cardHandlers.info"
+          @copy-email="cardHandlers.copyEmail"
           @create-api-key="cardHandlers.createApiKey"
           @portal="openPortal"
           @subscription="cardHandlers.subscription"
+          @pay="cardHandlers.pay"
           @edit="cardHandlers.edit"
           @remove="removeOne"
           @switch="switchTo"
@@ -1043,8 +987,7 @@ function logoutIde(account: Account): void {
 
     <!-- 所有重型弹层仅在用户实际打开时挂载，避免列表首帧执行其 setup 与监听逻辑。 -->
     <AddAccountModal v-if="addOpen" v-model:open="addOpen" @open-import="openImport" />
-    <ImportAccountsFileModal v-if="importFileOpen" v-model:open="importFileOpen" />
-    <ImportAccountsTextModal v-if="importTextOpen" v-model:open="importTextOpen" />
+    <ImportAccountsModal v-if="importOpen" v-model:open="importOpen" />
     <ExportAccountsModal
       v-if="exportOpen"
       v-model:open="exportOpen"
@@ -1080,30 +1023,10 @@ function logoutIde(account: Account): void {
       :accounts="batchTargets"
       @close="batchApiKeyOpen = false"
     />
-    <BatchSubscriptionModal
-      v-if="batchSubscriptionOpen"
-      :accounts="batchTargets"
-      @close="batchSubscriptionOpen = false"
-    />
-    <GroupPickerModal
-      v-if="batchGroupOpen || groupTarget"
-      :api="groupApi"
-      :ids="groupPickIds"
-      entity="账号"
-      title-entity="账户"
-      @close="closeGroupPicker"
-      @manage="groupManageOpen = true"
-    />
-    <GroupManageModal
-      v-if="groupManageOpen"
-      :api="groupApi"
-      entity="账号"
-      @close="groupManageOpen = false"
-    />
-    <AccountDetailDrawer
-      v-if="detailTarget"
-      :account="detailTarget"
-      @close="detailTarget = null"
+    <AccountInfoModal
+      v-if="infoTarget"
+      :account="infoTarget"
+      @close="infoTarget = null"
     />
     <AccountTestModal v-if="testTarget" :account="testTarget" @close="testTarget = null" />
     <CreateApiKeyModal
@@ -1120,6 +1043,11 @@ function logoutIde(account: Account): void {
       v-if="subscriptionTarget"
       :account="subscriptionTarget"
       @close="subscriptionTarget = null"
+    />
+    <PayInAppModal
+      v-if="payTarget"
+      :account="payTarget"
+      @close="payTarget = null"
     />
     <SwitchResultModal
       v-if="switchModalOpen && switchResult"
@@ -1164,6 +1092,66 @@ function logoutIde(account: Account): void {
   margin-bottom: 10px;
 }
 
+/*
+ * 搜索框：原先它被包在 SearchScopeInput 的 flex 组里，宽度由那个组约束。
+ * 现在直接放进工具栏，得自己限制宽度，否则会把右侧按钮挤走。
+ */
+.search-input {
+  width: 320px;
+  max-width: 40vw;
+}
+
+/*
+ * 阶段 tab：固定的五个业务阶段，形态与列表页的筛选条一致 ——
+ * 一行按钮，选中项用主题色描边 + 浅底，计数跟在名字后面。
+ */
+.stage-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.stage-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 12px;
+  border: 1px solid var(--kal-border);
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.stage-tab:hover {
+  border-color: var(--kal-primary);
+}
+
+.stage-tab.on {
+  border-color: var(--kal-primary);
+  background: color-mix(in srgb, var(--kal-primary) 10%, transparent);
+  color: var(--kal-primary);
+  font-weight: 600;
+}
+
+.stage-count {
+  font-size: 12px;
+  color: var(--kal-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.stage-tab.on .stage-count {
+  color: var(--kal-primary);
+}
+
 /* 统计与工具图标行 */
 .meta-bar {
   display: flex;
@@ -1174,6 +1162,7 @@ function logoutIde(account: Account): void {
   font-size: 13px;
 }
 
+/* 勾选数量紧跟在「全选」后面，与旁边的按钮保持同一基线 */
 .meta-bar .count-text {
   color: var(--kal-muted);
   white-space: nowrap;

@@ -85,7 +85,9 @@ watch(
     settingsStore.settings.autoRefresh,
     settingsStore.settings.autoRefreshUsage,
     settingsStore.settings.keyRefreshInterval,
-    settingsStore.settings.usageRefreshInterval
+    settingsStore.settings.usageRefreshInterval,
+    // 闲置号单独一条轨道，改了间隔要立刻按新值重排
+    settingsStore.settings.idleUsageRefreshInterval
   ],
   () => accountsStore.startAutoRefresh()
 )

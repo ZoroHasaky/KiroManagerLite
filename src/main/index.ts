@@ -5,6 +5,7 @@ import { applyRuntimeSettings, registerIpc } from './ipc'
 import { flushStore, getSettings } from './store'
 import { normalizePortalLocale } from '../shared/portalLocale'
 import { closePortalWindow } from './kiroPortal'
+import { shutdownPaymentSessionSync } from './payment/session'
 import {
   cancelLogin,
   handleProtocolUrl,
@@ -311,6 +312,8 @@ app.on('will-quit', () => {
   shutdownProxySync()
   // 内置浏览器是 BaseWindow，不受主窗口关闭影响，得显式收掉
   closePortalWindow()
+  // 应用内支付拉起的是外部 Chrome，同样不随主窗口关闭，退出时要一并杀掉
+  shutdownPaymentSessionSync()
   destroyTray()
   // 主库的合并写入最后刷：上面几步（还原端点等）可能还会改数据
   flushStore()

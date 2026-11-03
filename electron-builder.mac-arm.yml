@@ -1,0 +1,141 @@
+appId: dev.kiro.account.lite
+productName: Kiro Manager Lite
+directories:
+  buildResources: build
+# 不按 Electron ABI 重建原生模块：全项目唯一的原生依赖是 cbor-x 的可选加速模块
+# cbor-extract，加载失败时 cbor-x 会自动回退纯 JS 实现，功能不受影响。
+# 打开重建会要求 macOS / Windows 上具备 node-gyp 工具链，CI 上是常见的失败点。
+npmRebuild: false
+# 发布目标：latest*.yml 里的下载地址按此生成，供后续 electron-updater 检查更新。
+# CI 里统一用 --publish never，实际上传由 GitHub Actions 负责
+publish:
+  provider: github
+  owner: ZoroHasaky
+  repo: KiroManagerLite
+# 自定义 URL Scheme：kiro-manager-lite:// 与短别名 kml:// 快捷唤起应用
+protocols:
+  - name: Kiro Manager Lite
+    schemes:
+      - kiro-manager-lite
+      - kml
+  # 社交登录（Google / GitHub）的回调地址被 Kiro 固定成 kiro://，登录期间必须
+  # 临时把该 scheme 抢过来。macOS 的限制是：LSSetDefaultHandlerForURLScheme
+  # 只对 Info.plist 里已声明的 scheme 生效，不在这里声明的话
+  # app.setAsDefaultProtocolClient('kiro') 会静默失效，回调仍被 Kiro IDE 接走。
+  # 仅声明「能处理」，实际是否默认处理者由 onlineLogin 在登录前后动态切换。
+  - name: Kiro Auth Callback
+    schemes:
+      - kiro
+files:
+  - '!**/.vscode/*'
+  - '!src/*'
+  - '!electron.vite.config.{js,ts,mjs,cjs}'
+  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+  - '!{.eslintrc,.prettierrc,.prettierignore,.editorconfig}'
+  # README 用的截图、设计源文件与 CI 配置不进安装包
+  - '!docs'
+  - '!sourcefile'
+  - '!.github'
+  # 构建期脚本（清理产物、生成图标与 DMG 背景），运行时用不到
+  - '!scripts'
+  # 打包配置本身也不该进安装包（含本文件）
+  - '!electron-builder*.yml'
+  # 版本单一真源，只在构建期读取，不进安装包
+  - '!VERSION'
+  - '!*.md'
+asarUnpack:
+  - resources/**
+# 产物统一命名：${name}-${version}-${平台}-${arch}.${ext}，避免默认名里带空格
+mac:
+  # 与 electron-builder.yml 的唯一区别：只打 Apple Silicon（arm64）一份，
+  # 产物是 dmg + zip，不产 pkg。用于 build:mac:arm。
+  # 需要双架构 + pkg 时仍用 electron-builder.yml（build:mac）。
+  target:
+    - target: dmg
+      arch:
+        - arm64
+    # zip 保留：electron-updater 在 darwin 上的更新依赖 zip 产物与 latest-mac.yml
+    - target: zip
+      arch:
+        - arm64
+  artifactName: ${name}-${version}-mac-${arch}.${ext}
+  category: public.app-category.developer-tools
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.inherit.plist
+  notarize: false
+dmg:
+  # 背景图由 scripts/dmg-background.swift 生成（含 @2x），尺寸与下面的 window 一致。
+  # 坐标是图标中心，且必须和脚本里画箭头、文案的位置对上，改一边要同步改另一边。
+  background: build/background.png
+  # 外框比背景图（560×340）高 90 点：标题栏约 28，加上用户可能开着的路径栏、状态栏约 55，
+  # 这样任何 Finder 设置下背景都完整可见、不出滚动条（原因见 scripts/dmg-background.swift 文件头）
+  window:
+    width: 560
+    height: 430
+  iconSize: 96
+  iconTextSize: 12
+  # 布局：安装指南居中在顶部，下面 App 与 Applications 以窗口中线左右对称。
+  # 所有图标都放在内容区上部：路径栏 / 状态栏跟随用户的 Finder 全局设置，DMG 里关不掉，
+  # 开着时可视高度会少五十点左右，图标压得太低就会出现滚动条。
+  contents:
+    # 安装指南（纯文本，双击用「文本编辑」打开）：说明 macOS 首次打开被拦截的处理办法，
+    # 避免用户把安全拦截误当成安装失败。
+    # path 自 electron-builder 26 起不再按 buildResources 解析，而是原样交给 dmgbuild
+    # （相对工程根目录），所以这里要写成 build/ 开头；只写文件名会报 FileNotFoundError。
+    - x: 280
+      y: 60
+      type: file
+      path: build/安装指南.txt
+      name: 安装指南.txt
+    - x: 140
+      y: 180
+      type: file
+    - x: 420
+      y: 180
+      type: link
+      path: /Applications
+    # 这里原本还给卷上的隐藏文件（.background / .Trashes / .VolumeIcon.icns / .fseventsd）
+    # 各写了一条只有 name、没有 path 的条目，用来把它们挪进窗口角落，
+    # 这样开着「显示隐藏文件」的用户打开 DMG 不会出现滚动条。
+    # electron-builder 26 起不能再这么写：缺 path 的 file 条目会被填上 .app 的路径
+    # （dmgUtil 里的 `path: c.path || appPath`），dmgbuild 于是去把整个 .app
+    # 拷成 .VolumeIcon.icns，直接构建失败。没有替代写法，只能去掉这几条。
+    # 代价是开了显示隐藏文件的用户可能看到滚动条，属于观感问题。
+pkg:
+  # 固定装到 /Applications；不允许重定位：否则机器上已有同 bundle id 的副本（比如在下载目录里双击过）时，
+  # 安装器会把新版本装到那个副本的位置，用户在「应用程序」里看到的还是旧版
+  installLocation: /Applications
+  isRelocatable: false
+  # 只允许装到本机的 /Applications：选「仅为我安装」会落到 ~/Applications，
+  # 和 DMG 用户的位置不一致，排查问题、覆盖升级都容易乱
+  allowAnywhere: false
+  allowCurrentUserHome: false
+  allowRootDirectory: true
+  # 允许降级覆盖：回退到旧版本排查问题时不被拦
+  isVersionChecked: false
+  # 安装后脚本走默认位置 build/pkg-scripts/postinstall（必须可执行）：再清一次隔离属性兜底
+win:
+  # nsis 产出的就是 .exe 安装包。
+  # 只出 x64：原生依赖 cbor-extract 的预编译产物没有 win32-arm64，
+  # 打 arm64 会退回 node-gyp 源码编译，在非 Windows 机器上必然失败。
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: ${name}-${version}-win-${arch}-setup.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Kiro Manager Lite
+  deleteAppDataOnUninstall: false
+linux:
+  # 同上：linux-arm64 的预编译包本机没装，交叉编译会挂，只出 x64
+  target:
+    - target: AppImage
+      arch:
+        - x64
+  artifactName: ${name}-${version}-linux-${arch}.${ext}
+  category: Development

@@ -61,6 +61,23 @@ const api = {
   openInAppBrowser: (url: string, title?: string) =>
     invoke('app:open-in-app-browser', url, title),
 
+  // 应用内支付：拉起外部 Chrome，自动填账单地址与卡信息
+  /** 可选的账单省份（中文名） */
+  getPaymentProvinces: () => invoke('payment:provinces'),
+  /** 生成随机账单地址；province 为空则随机省份 */
+  generatePaymentAddress: (province?: string) => invoke('payment:generate-address', province),
+  /** 打开浏览器并开始自动填充 */
+  openPayment: (payload: unknown) => invoke('payment:open', payload),
+  /** 关闭当前支付会话 */
+  closePayment: () => invoke('payment:close'),
+  /** 自动填充进度推送 */
+  onPaymentUpdate: (handler: (payload: unknown) => void) =>
+    subscribe('payment:update', handler),
+
+  /** 把账号订阅切到 Kiro Free（Stripe 门户，纯 HTTP，不启动浏览器） */
+  switchSubscriptionToFree: (account: unknown) =>
+    invoke('subscription:switch-to-free', account),
+
   // Kiro API Key 管理 / 本地网关
   loadKeys: () => invoke('keys:load'),
   addKey: (key: string, note?: string, region?: string) =>

@@ -150,14 +150,17 @@ async function tryManageUrl(session: PortalCsrfSession): Promise<string | undefi
 }
 
 /**
- * 点订阅标签后的一次查询：先要账单管理链接，拿不到就退回可开通档位列表。
- * 两件事合成一次 IPC，界面只等一轮。
+ * 点订阅标签后的一次查询：只取可开通档位，不做「是否已订阅」的前置探测。
+ *
+ * 之前是先调 GenerateSubscriptionManagementUrl 探测已订阅账号，拿不到再退回档位列表。
+ * 但实测部分 Free 账号调这个接口会回
+ *   401 UnauthorizedException: Authentication required or access denied.
+ * 于是整个查询直接失败，界面连档位列表都看不到（GetAvailableSubscriptionPlans 对
+ * 这些账号一直是 200）。改成先展示列表，账单/支付链接等到用户选中具体档位时，
+ * 再由 createSubscriptionCheckout 现取——官方门户前端也是这个顺序。
  */
 export async function getSubscriptionEntry(account: Account): Promise<SubscriptionEntry> {
   const session = await openCsrfSession(account)
-
-  const manageUrl = await tryManageUrl(session)
-  if (manageUrl) return { manageUrl, plans: [], disclaimer: [] }
 
   const res = await csrfOperation<{ subscriptionPlans?: RawPlan[]; disclaimer?: string[] }>(
     'GetAvailableSubscriptionPlans',

@@ -23,6 +23,18 @@ const router = createRouter({
       meta: { title: 'API Key 管理' }
     },
     {
+      path: '/subscription',
+      name: 'subscription',
+      component: () => import('@/views/SubscriptionView.vue'),
+      meta: { title: '订阅管理' }
+    },
+    {
+      path: '/pricing',
+      name: 'pricing',
+      component: () => import('@/views/PricingView.vue'),
+      meta: { title: '实时价格' }
+    },
+    {
       path: '/proxy',
       name: 'proxy',
       component: () => import('@/views/ProxyView.vue'),

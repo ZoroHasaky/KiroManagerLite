@@ -7,6 +7,8 @@
  */
 import { computed, ref } from 'vue'
 import { message } from 'ant-design-vue'
+import NotePresetBar from '@/components/common/NotePresetBar.vue'
+import { appendNotePreset } from '@shared/notePresets'
 
 const props = defineProps<{
   ids: string[]
@@ -24,6 +26,11 @@ const emit = defineEmits<{ submit: [note: string]; close: [] }>()
 
 const note = ref(props.initial ?? '')
 const single = computed(() => props.ids.length === 1)
+
+/** 点常用备注：追加到已有文本后面，见 appendNotePreset 的说明 */
+function applyPreset(text: string): void {
+  note.value = appendNotePreset(note.value, text)
+}
 
 function submit(): void {
   if (!props.ids.length) return void message.info(`没有选中的${props.entity}`)
@@ -51,6 +58,7 @@ function submit(): void {
         }}的备注。
       </template>
     </p>
+    <NotePresetBar :value="note" @pick="applyPreset" />
     <a-textarea
       v-model:value="note"
       :rows="3"
