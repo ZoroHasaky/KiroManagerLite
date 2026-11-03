@@ -10,6 +10,11 @@ name: Release
 # 也可以在 Actions 页面手动触发（workflow_dispatch）：
 #   - 默认只构建，不建 Release，用于验证打包链路；
 #   - 勾选 force_release 才真正发布，适合补发或重跑失败的发布。
+#
+# 注意：本仓库是 fork（上游 lucks-cloud/kiro-manager-lite）。GitHub 默认不在 fork 上
+# 自动运行 push 触发的 workflow，需要在 fork 仓库的 Actions 页面点一次
+# 「I understand my workflows, go ahead and enable them」才会生效。
+# 启用之后上述 push 触发与手动触发都能正常跑；在此之前推送不会有任何 run。
 on:
   push:
     branches:
