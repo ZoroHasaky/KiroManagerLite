@@ -34,6 +34,26 @@ if (process.platform !== 'darwin') {
 
 const extra = process.argv.slice(2)
 
+// 调用方可能也会传 --publish（CI 里习惯写 `npm run xxx -- --publish never`）。
+// 这会把 --publish 传成两次，yargs 解析成数组 ["never","never"] 而不是字符串 "never"，
+// electron-builder 于是判定为「要发布」，转去找 GH_TOKEN 并在收尾阶段报错。
+// 这里把外部传入的 --publish 及其取值滤掉，统一用下面写死的那一个。
+function stripPublish(args) {
+  const out = []
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]
+    if (arg === '--publish' || arg === '-p') {
+      // 跳过它自己与紧随其后的取值（若存在且不是另一个选项）
+      const next = args[i + 1]
+      if (next !== undefined && !next.startsWith('-')) i++
+      continue
+    }
+    if (arg.startsWith('--publish=')) continue
+    out.push(arg)
+  }
+  return out
+}
+
 const args = [
   'electron-builder',
   '--mac',
@@ -43,7 +63,7 @@ const args = [
   // 只打包不发布；上传由调用方（CI 或人工）决定
   '--publish',
   'never',
-  ...extra
+  ...stripPublish(extra)
 ]
 
 console.log('正在打包 macOS arm64（dmg + zip）…')

@@ -157,7 +157,9 @@ jobs:
         run: npm run version:check
 
       # --publish never：产物统一交给下面的 release job 上传，
-      # 避免 electron-builder 在 CI 里自行创建重复的 Release
+      # 避免 electron-builder 在 CI 里自行创建重复的 Release。
+      # macOS 那条走 scripts/build-mac-arm.mjs，脚本内部已经写死 --publish never，
+      # 这里再传一次会被 yargs 收成数组导致判定为「要发布」，脚本里已做了滤重。
       - name: 打包
         run: npm run ${{ matrix.script }} -- --publish never
 
