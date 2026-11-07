@@ -19,11 +19,9 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import {
   CalendarOutlined,
-  ClockCircleOutlined,
   ExclamationCircleOutlined,
   MoneyCollectOutlined,
-  SearchOutlined,
-  ThunderboltOutlined
+  SearchOutlined
 } from '@ant-design/icons-vue'
 
 /** 美元 → 人民币参考汇率（固定值，与参考实现同一口径，不随行情自动更新） */
@@ -68,11 +66,6 @@ function getMonthWindow(utcMs: number): MonthWindow {
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100
-}
-
-/** 当月折算价 */
-function proratedUsd(price: number, ratio: number): number {
-  return round2(price * ratio)
 }
 
 /** 新号首订实付：原月费减首订券后整体按剩余比例折算 */
@@ -165,24 +158,17 @@ const monthLabel = computed(() => {
 /** 套餐卡片的实时数据 */
 const planCards = computed(() =>
   PLANS.map((plan) => {
-    const prorated = proratedUsd(plan.price, ratio.value)
     const pay = firstSubPayUsd(plan.price, ratio.value)
-    const alwaysFree = plan.price <= FIRST_SUB_COUPON_USD
-    /* 实付线性下降，月末归零：每天降 (原月费 − 券) / 全月天数 */
-    const dailyDropUsd =
-      (Math.max(0, plan.price - FIRST_SUB_COUPON_USD) * 86400) / win.value.totalSec
     /* 积分线性折算，新号赠送的 500 分是定额，加在折算结果之上 */
-    const creditsProrated = Math.round(plan.credits * ratio.value)
-    const creditsNow = creditsProrated + SIGNUP_BONUS_CREDITS
+    const creditsNow = Math.round(plan.credits * ratio.value) + SIGNUP_BONUS_CREDITS
+    /* 积分性价比：每付 1 美元能拿到多少积分；实付为 0 时没有意义 */
+    const creditsPerUsd = pay > 0 ? creditsNow / pay : null
     return {
       ...plan,
-      prorated,
       pay,
       isFreeNow: pay === 0,
-      alwaysFree,
-      dailyDropUsd,
-      creditsProrated,
-      creditsNow
+      creditsNow,
+      creditsPerUsd
     }
   })
 )
@@ -309,30 +295,6 @@ function useFreePoint(): void {
       >
         <div class="plan-head">
           <span class="plan-name">{{ plan.name }}</span>
-          <a-tag :bordered="false">{{ fmtInt(plan.creditsNow) }} credits</a-tag>
-        </div>
-
-        <div class="plan-rows">
-          <div class="plan-row">
-            <span class="muted">原月费</span>
-            <span class="num">{{ fmtUsd(plan.price) }} · {{ fmtCny(plan.price) }}</span>
-          </div>
-          <div class="plan-row">
-            <span class="muted">当月折算价</span>
-            <span class="num">{{ fmtUsd(plan.prorated) }} · {{ fmtCny(plan.prorated) }}</span>
-          </div>
-          <div class="plan-row">
-            <span class="muted">当月折算积分</span>
-            <span class="num">{{ fmtInt(plan.creditsProrated) }} / {{ fmtInt(plan.credits) }}</span>
-          </div>
-          <div class="plan-row">
-            <span class="muted">新号赠送积分</span>
-            <span class="num">+{{ fmtInt(SIGNUP_BONUS_CREDITS) }}（不折算）</span>
-          </div>
-          <div class="plan-row">
-            <span class="muted">当月合计积分</span>
-            <span class="num accent-num">{{ fmtInt(plan.creditsNow) }}</span>
-          </div>
         </div>
 
         <div class="pay-box" :class="{ free: plan.isFreeNow }">
@@ -341,19 +303,20 @@ function useFreePoint(): void {
           <span class="pay-cny">≈ {{ fmtCny(plan.pay) }}</span>
         </div>
 
-        <div class="plan-foot">
-          <p v-if="plan.isFreeNow" class="zero-now">
-            <ThunderboltOutlined />
-            ★ 当前已享 0 元免单
-          </p>
-          <p v-else class="zero-in">
-            <ClockCircleOutlined />
-            每天下降 {{ fmtUsd(plan.dailyDropUsd) }} · ≈ {{ fmtCny(plan.dailyDropUsd) }}
-          </p>
-          <p class="zero-at">
-            <span class="muted">{{ plan.alwaysFree ? '整月任意时刻首订均免单' : '月末归零：' }}</span>
-            <span v-if="!plan.alwaysFree" class="num">{{ fmtLocal(win.endUtc) }}</span>
-          </p>
+        <div class="plan-rows">
+          <div class="plan-row">
+            <span class="muted">可获得积分</span>
+            <span class="num accent-num">{{ fmtInt(plan.creditsNow) }}</span>
+          </div>
+          <div class="plan-row">
+            <span class="muted">积分性价比</span>
+            <span class="num">
+              <template v-if="plan.creditsPerUsd !== null">
+                {{ fmtInt(Math.round(plan.creditsPerUsd)) }} 积分/美元
+              </template>
+              <span v-else class="muted">—</span>
+            </span>
+          </div>
         </div>
       </a-card>
     </div>
@@ -661,35 +624,6 @@ function useFreePoint(): void {
   font-size: 12px;
   color: var(--kal-muted);
   font-variant-numeric: tabular-nums;
-}
-
-.plan-foot {
-  margin-top: 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  font-size: 12px;
-}
-
-.plan-foot p {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 5px;
-  margin: 0;
-}
-
-.zero-now {
-  font-weight: 600;
-  color: #52c41a;
-}
-
-.zero-in {
-  color: var(--kal-muted);
-}
-
-.zero-at {
-  color: var(--kal-muted);
 }
 
 /* 反向查询 */
