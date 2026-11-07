@@ -4,9 +4,6 @@ import {
   CheckCircleFilled,
   CheckOutlined,
   CloseCircleFilled,
-  CommentOutlined,
-  GithubOutlined,
-  HeartFilled,
   InfoCircleFilled,
   SyncOutlined,
   ThunderboltFilled
@@ -14,10 +11,6 @@ import {
 import { useSettingsStore } from '@/stores/settings'
 import { useUpdateStore } from '@/stores/update'
 import kiroLogo from '@/assets/kiro-logo.png'
-import qqGroup from '@/assets/qq-group.png'
-import authorAvatar from '@/assets/author_avatar.jpg'
-import sponsorWechat from '@/assets/sponsor_wechat.jpg'
-import sponsorAlipay from '@/assets/sponsor_alipay.jpg'
 
 const settingsStore = useSettingsStore()
 const updateStore = useUpdateStore()
@@ -28,9 +21,8 @@ const checking = computed(() => updateStore.checking)
 const checkResult = computed(() => updateStore.result)
 const checkOpen = ref(false)
 const checkError = ref('')
-const groupOpen = ref(false)
 
-/** 手动检查始终访问 GitHub；先打开状态弹窗，再在弹窗中呈现最终结果。 */
+/** 手动检查先打开状态弹窗，再在弹窗中呈现最终结果。 */
 async function checkUpdate(): Promise<void> {
   if (checking.value) return
   checkError.value = ''
@@ -43,11 +35,6 @@ async function checkUpdate(): Promise<void> {
   // 发现新版本时关闭状态弹窗，由全局 UpdateAvailableModal 接管更新详情。
   if (response.data?.hasUpdate) checkOpen.value = false
   else if (!response.data) checkError.value = '没有收到有效的版本检查结果，请稍后重试'
-}
-
-function manualUpdate(): void {
-  checkOpen.value = false
-  open(REPO_URL)
 }
 
 /** 关于页展示的功能清单，按应用的模块顺序排列，与 README 的功能特性保持一致 */
@@ -71,63 +58,11 @@ const features = [
   { name: '个性化设置', desc: '主题风格与主题色、左右 / 上下布局、控件尺寸、HTTP 代理、内置浏览器地区、定时备份与初始化' },
   { name: '桌面端体验', desc: '系统托盘常驻、关闭行为可配、自定义协议唤起、单实例锁' }
 ]
-
-/** 本项目仓库地址，头部按钮与检查更新指向同一个仓库 */
-const REPO_URL = 'https://github.com/lucks-cloud/kiro-manager-lite'
-
-const author = {
-  name: 'lucks-cloud',
-  url: 'https://github.com/lucks-cloud',
-  avatar: authorAvatar
-}
-
-const sponsors = [
-  { label: '微信', image: sponsorWechat },
-  { label: '支付宝', image: sponsorAlipay }
-]
-
-/** 致谢的开源项目：名称点击跳转 GitHub */
-const credits = [
-  {
-    name: 'Kiro-account-manager',
-    url: 'https://github.com/chaogei/Kiro-account-manager',
-    desc: 'Kiro 多账号管理器，本项目账户管理接口实现的来源（AGPL-3.0）'
-  },
-  {
-    name: 'Kiro-Go',
-    url: 'https://github.com/Quorinex/Kiro-Go',
-    desc: '把 Kiro 账号转换为 OpenAI / Anthropic 兼容 API 的 Go 服务'
-  },
-  {
-    name: 'kiro.rs',
-    url: 'https://github.com/hank9999/kiro.rs',
-    desc: 'Rust 编写的 Anthropic Claude API 兼容代理，将请求转换为 Kiro API'
-  },
-  {
-    name: 'new-api',
-    url: 'https://github.com/QuantumNous/new-api',
-    desc: '连接模型、应用与 Agent 的 AI 网关'
-  },
-  {
-    name: 'sub2api',
-    url: 'https://github.com/touwaeriol/sub2api',
-    desc: 'AI API 网关平台，订阅配额分发管理'
-  },
-  {
-    name: 'Kiro',
-    url: 'https://github.com/kirodotdev/Kiro',
-    desc: 'Kiro 官方仓库'
-  }
-]
-
-function open(url: string): void {
-  void window.api.openExternal(url)
-}
 </script>
 
 <template>
   <div>
-    <!-- 头部：品牌标识 + 版本 + 检查更新 / 交流群 -->
+    <!-- 头部：品牌标识 + 版本 + 检查更新 -->
     <section class="hero">
       <span class="hero-blob hero-blob-a" />
       <span class="hero-blob hero-blob-b" />
@@ -139,14 +74,6 @@ function open(url: string): void {
           <a-button :loading="checking" @click="checkUpdate">
             <template #icon><SyncOutlined /></template>
             检查更新
-          </a-button>
-          <a-button @click="groupOpen = true">
-            <template #icon><CommentOutlined /></template>
-            加入交流群
-          </a-button>
-          <a-button @click="open(REPO_URL)">
-            <template #icon><GithubOutlined /></template>
-            GitHub
           </a-button>
         </a-space>
       </div>
@@ -179,7 +106,7 @@ function open(url: string): void {
       </p>
     </a-card>
 
-    <a-card size="small" class="feature-card" style="margin-bottom: 16px">
+    <a-card size="small" class="feature-card" style="margin-bottom: 24px">
       <template #title>
         <span class="card-title">
           <ThunderboltFilled class="card-title-icon" />
@@ -190,55 +117,6 @@ function open(url: string): void {
         <li v-for="item in features" :key="item.name" class="feature-item">
           <CheckOutlined class="feature-check" />
           <span class="feature-name">{{ item.name }}</span>
-          <span class="feature-sep">：</span>
-          <span class="feature-desc muted">{{ item.desc }}</span>
-        </li>
-      </ul>
-    </a-card>
-
-    <a-card size="small" title="作者" style="margin-bottom: 16px">
-      <div class="author">
-        <a-avatar :size="56" :src="author.avatar" alt="作者头像" />
-        <div class="author-main">
-          <div class="author-name">{{ author.name }}</div>
-          <!-- 保留 href 让链接可聚焦，实际跳转交给系统浏览器 -->
-          <a
-            class="author-link mono"
-            :href="author.url"
-            @click.prevent="open(author.url)"
-          >
-            {{ author.url }}
-          </a>
-        </div>
-        <a-button @click="open(author.url)">
-          <template #icon><GithubOutlined /></template>
-          GitHub 主页
-        </a-button>
-      </div>
-    </a-card>
-
-    <a-card size="small" title="赞助支持" style="margin-bottom: 16px">
-      <p class="muted" style="margin: 0 0 14px">
-        <HeartFilled style="color: #eb2f96" />
-        本项目免费开源，如果它帮你省了力气，可以请作者喝杯咖啡，完全自愿。
-      </p>
-      <div class="sponsor-grid">
-        <div v-for="item in sponsors" :key="item.label" class="sponsor-item">
-          <img class="sponsor-qr" :src="item.image" :alt="`${item.label}收款码`" />
-          <span class="sponsor-label muted">{{ item.label }}</span>
-        </div>
-      </div>
-    </a-card>
-
-    <a-card size="small" title="致谢与许可" class="credits-card">
-      <p class="muted" style="margin: 0 0 12px">
-        本项目以 AGPL-3.0 许可开源。感谢以下开源项目的先行探索，本项目在它们的基础上学习、借鉴与重新实现：
-      </p>
-      <ul class="feature-list">
-        <li v-for="item in credits" :key="item.url" class="feature-item">
-          <GithubOutlined class="feature-check" />
-          <!-- 保留 href 让链接可聚焦，实际跳转交给系统浏览器 -->
-          <a class="feature-name credit-link" :href="item.url" @click.prevent="open(item.url)">{{ item.name }}</a>
           <span class="feature-sep">：</span>
           <span class="feature-desc muted">{{ item.desc }}</span>
         </li>
@@ -260,13 +138,13 @@ function open(url: string): void {
         <template v-if="checking">
           <a-spin size="large" class="check-spinner" />
           <div class="check-title">正在检查更新</div>
-          <div class="check-detail muted">正在连接 GitHub 并获取最新版本，请稍候…</div>
+          <div class="check-detail muted">正在获取最新版本信息，请稍候…</div>
         </template>
         <template v-else-if="checkError">
           <CloseCircleFilled class="check-icon error" />
           <div class="check-title">检查更新失败</div>
           <div class="check-error">{{ checkError }}</div>
-          <div class="check-detail muted">可以稍后重试，或前往项目主页手动下载最新版本。</div>
+          <div class="check-detail muted">可以稍后重试。</div>
         </template>
         <template v-else>
           <CheckCircleFilled class="check-icon ok" />
@@ -284,21 +162,9 @@ function open(url: string): void {
             <template #icon><SyncOutlined /></template>
             重新检查
           </a-button>
-          <a-button type="primary" @click="manualUpdate">
-            <template #icon><GithubOutlined /></template>
-            手动更新
-          </a-button>
         </template>
         <a-button v-else type="primary" @click="checkOpen = false">好的</a-button>
       </template>
-    </a-modal>
-
-    <!-- 用户交流群 -->
-    <a-modal v-model:open="groupOpen" title="用户交流群" :width="440" centered :footer="null">
-      <div class="group-box">
-        <img class="group-qr" :src="qqGroup" alt="QQ 交流群二维码" />
-        <span class="muted group-tip">用 QQ 扫码加入交流群</span>
-      </div>
     </a-modal>
   </div>
 </template>
@@ -367,22 +233,6 @@ function open(url: string): void {
 .feature-desc {
   flex: 1 1 auto;
   min-width: 0;
-}
-
-.credits-card :deep(.ant-card-body) {
-  padding: 16px;
-}
-
-/* 项目名是链接：悬停加下划线，与正文里的其它外链一致 */
-.credit-link:hover,
-.credit-link:focus-visible {
-  text-decoration: underline;
-  outline: none;
-}
-
-/* 最后一张卡片别贴着内容区底边 */
-.credits-card {
-  margin-bottom: 24px;
 }
 
 /* ============ 头部横幅 ============ */
@@ -495,77 +345,5 @@ function open(url: string): void {
   margin: 10px 0 6px;
   font-size: 16px;
   font-weight: 600;
-}
-
-/* ============ 交流群弹窗 ============ */
-.group-box {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-}
-
-/* 原图是竖长图，宽度撑满弹窗的同时限高，避免小窗口下弹窗超出视口 */
-.group-qr {
-  width: 100%;
-  max-width: 380px;
-  height: auto;
-  max-height: 62vh;
-  object-fit: contain;
-  border-radius: 8px;
-  background: #fff;
-}
-
-.group-tip {
-  font-size: 12px;
-}
-
-.author {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-
-.author-main {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.author-name {
-  font-size: 16px;
-  font-weight: 600;
-}
-
-.author-link {
-  font-size: 12px;
-  word-break: break-all;
-}
-
-.sponsor-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 16px;
-}
-
-.sponsor-item {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  padding: 10px;
-  border-radius: 10px;
-  background: var(--kal-block-bg);
-}
-
-/* 只固定宽度，高度按原图比例走，避免二维码被压变形 */
-.sponsor-qr {
-  width: 260px;
-  height: auto;
-  border-radius: 8px;
-  background: #fff;
-}
-
-.sponsor-label {
-  font-size: 12px;
 }
 </style>
