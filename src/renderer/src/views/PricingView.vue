@@ -2,13 +2,17 @@
 /**
  * 实时价格：Kiro 新号首订价按 UTC 自然月实时折算。
  *
- * 口径与 KiroAccountManager 的「实时价格」保持一致：
+ * 首订券与原月费一起按比例折算，实付整体线性下降（例：Pro+ 剩余 84.87% 时为 $16.97）：
  *   折算价   = round2(原月费 × 当月剩余比例)
- *   首订实付 = max(0, 折算价 − $20 首订券)
+ *   首订实付 = round2(max(0, 原月费 − $20 首订券) × 当月剩余比例)
  *   ratio    = 当月剩余秒数 / 全月秒数，按 UTC 自然月计算并 clamp 到 0–1
  *
+ * 订阅积分同样线性折算，但新号 500 赠送积分是固定额度，不参与折算：
+ *   当月积分 = round(全额积分 × 剩余比例) + 500
+ *
  * 价格随时间单调下降，所以「目标价 → 时间点」有唯一解：
- *   ratio* = (目标价 + 券) / 原月费，时刻 = 月末 − 全月秒数 × ratio*
+ *   ratio* = 目标价 / (原月费 − 券)，时刻 = 月末 − 全月秒数 × ratio*
+ * 原月费高于券的档位只在月末才到 $0，不存在月中的免单点。
  *
  * 纯前端本地计算，不依赖主进程与网络：所有数字都来自本机时钟。
  */
@@ -26,21 +30,23 @@ import {
 const USD_TO_CNY = 6.9726
 /** Kiro 新号首订优惠券面额（美元） */
 const FIRST_SUB_COUPON_USD = 20
+/** 开会员额外赠送的固定积分，不随时间折算 */
+const SIGNUP_BONUS_CREDITS = 500
 
 interface KiroPlan {
   key: string
   name: string
   /** 原月费（美元） */
   price: number
-  /** 全额 Credits 配额，仅用于展示 */
-  credits: string
+  /** 全额 Credits 配额（整月），用于线性折算 */
+  credits: number
 }
 
 const PLANS: KiroPlan[] = [
-  { key: 'pro', name: 'Kiro Pro', price: 20, credits: '1,000' },
-  { key: 'pro_plus', name: 'Kiro Pro+', price: 40, credits: '2,000' },
-  { key: 'pro_max', name: 'Kiro Pro Max', price: 100, credits: '5,000' },
-  { key: 'power', name: 'Kiro Power', price: 200, credits: '10,000' }
+  { key: 'pro', name: 'Kiro Pro', price: 20, credits: 1000 },
+  { key: 'pro_plus', name: 'Kiro Pro+', price: 40, credits: 2000 },
+  { key: 'pro_max', name: 'Kiro Pro Max', price: 100, credits: 5000 },
+  { key: 'power', name: 'Kiro Power', price: 200, credits: 10000 }
 ]
 
 // ============ 计算（纯函数） ============
@@ -69,9 +75,9 @@ function proratedUsd(price: number, ratio: number): number {
   return round2(price * ratio)
 }
 
-/** 新号首订实付：折算价减首订券，不足 0 按 0 算 */
+/** 新号首订实付：原月费减首订券后整体按剩余比例折算 */
 function firstSubPayUsd(price: number, ratio: number): number {
-  return Math.max(0, round2(price * ratio) - FIRST_SUB_COUPON_USD)
+  return round2(Math.max(0, price - FIRST_SUB_COUPON_USD) * ratio)
 }
 
 /**
@@ -86,7 +92,7 @@ function solveTimeForTarget(
   if (!Number.isFinite(targetUsd)) return null
   const maxPay = firstSubPayUsd(price, 1)
   if (targetUsd < 0 || targetUsd > maxPay) return null
-  const ratio = Math.min(1, Math.max(0, (targetUsd + FIRST_SUB_COUPON_USD) / price))
+  const ratio = Math.min(1, Math.max(0, targetUsd / (price - FIRST_SUB_COUPON_USD)))
   return { atUtcMs: win.endUtc - win.totalSec * ratio * 1000, ratio }
 }
 
@@ -98,6 +104,10 @@ function fmtUsd(n: number): string {
 
 function fmtCny(usd: number): string {
   return `¥${(usd * USD_TO_CNY).toFixed(2)}`
+}
+
+function fmtInt(n: number): string {
+  return n.toLocaleString('en-US')
 }
 
 function pad2(n: number): string {
@@ -158,21 +168,21 @@ const planCards = computed(() =>
     const prorated = proratedUsd(plan.price, ratio.value)
     const pay = firstSubPayUsd(plan.price, ratio.value)
     const alwaysFree = plan.price <= FIRST_SUB_COUPON_USD
-    /*
-     * 免单临界时刻：ratio = 券 / 原月费，即月末往前推 (1 − 券/原月费) 个整月。
-     * 原月费不高于券时整月都是 $0，这个时刻没有意义，卡片上单独说明。
-     */
-    const zeroAtMs =
-      win.value.startUtc +
-      win.value.totalSec * Math.max(0, 1 - FIRST_SUB_COUPON_USD / plan.price) * 1000
+    /* 实付线性下降，月末归零：每天降 (原月费 − 券) / 全月天数 */
+    const dailyDropUsd =
+      (Math.max(0, plan.price - FIRST_SUB_COUPON_USD) * 86400) / win.value.totalSec
+    /* 积分线性折算，新号赠送的 500 分是定额，加在折算结果之上 */
+    const creditsProrated = Math.round(plan.credits * ratio.value)
+    const creditsNow = creditsProrated + SIGNUP_BONUS_CREDITS
     return {
       ...plan,
       prorated,
       pay,
       isFreeNow: pay === 0,
       alwaysFree,
-      zeroAtMs,
-      zeroRemain: breakdown((zeroAtMs - now.value) / 1000)
+      dailyDropUsd,
+      creditsProrated,
+      creditsNow
     }
   })
 )
@@ -187,7 +197,7 @@ const targetPlan = computed(() => PLANS.find((p) => p.key === targetPlanKey.valu
 
 const planOptions = PLANS.map((p) => ({
   value: p.key,
-  label: `${p.name} · ${fmtUsd(p.price)}/月 · ${p.credits} credits`
+  label: `${p.name} · ${fmtUsd(p.price)}/月 · ${fmtInt(p.credits)} credits`
 }))
 
 const reverseResult = computed(() => {
@@ -234,7 +244,7 @@ function useFreePoint(): void {
         <div class="hero-text">
           <h2 class="hero-title">实时价格</h2>
           <p class="hero-desc">
-            Kiro 新号首订价格，按 UTC 自然月实时折算（含人民币换算与免单临界点）
+            Kiro 新号首订价格与积分，按 UTC 自然月线性折算（含人民币换算与反向查询）
           </p>
         </div>
       </div>
@@ -247,7 +257,7 @@ function useFreePoint(): void {
         <div>
           <div class="card-title">计费基准（UTC 自然月）</div>
           <div class="card-sub">
-            首订实付随当月剩余时间线性下降，并叠加 ${{ FIRST_SUB_COUPON_USD }} 新号首订券
+            首订实付 =（原月费 − ${{ FIRST_SUB_COUPON_USD }} 首订券）× 当月剩余比例，随时间线性下降
           </div>
         </div>
       </div>
@@ -282,9 +292,9 @@ function useFreePoint(): void {
       />
 
       <p class="formula">
-        核心公式：首订实付 = max(0, 原月费 × 当月剩余比例 − ${{ FIRST_SUB_COUPON_USD }} 首订券)
+        核心公式：首订实付 = max(0, 原月费 − ${{ FIRST_SUB_COUPON_USD }} 首订券) × 当月剩余比例
         · 汇率：$1 = ¥{{ USD_TO_CNY }}
-        · 全额 Credits 配额在月末最后一天 UTC 23:59 重置
+        · 当月积分 = 全额积分 × 剩余比例 + {{ SIGNUP_BONUS_CREDITS }} 新号赠送（赠送部分不折算）
       </p>
     </a-card>
 
@@ -299,7 +309,7 @@ function useFreePoint(): void {
       >
         <div class="plan-head">
           <span class="plan-name">{{ plan.name }}</span>
-          <a-tag :bordered="false">{{ plan.credits }} credits</a-tag>
+          <a-tag :bordered="false">{{ fmtInt(plan.creditsNow) }} credits</a-tag>
         </div>
 
         <div class="plan-rows">
@@ -310,6 +320,18 @@ function useFreePoint(): void {
           <div class="plan-row">
             <span class="muted">当月折算价</span>
             <span class="num">{{ fmtUsd(plan.prorated) }} · {{ fmtCny(plan.prorated) }}</span>
+          </div>
+          <div class="plan-row">
+            <span class="muted">当月折算积分</span>
+            <span class="num">{{ fmtInt(plan.creditsProrated) }} / {{ fmtInt(plan.credits) }}</span>
+          </div>
+          <div class="plan-row">
+            <span class="muted">新号赠送积分</span>
+            <span class="num">+{{ fmtInt(SIGNUP_BONUS_CREDITS) }}（不折算）</span>
+          </div>
+          <div class="plan-row">
+            <span class="muted">当月合计积分</span>
+            <span class="num accent-num">{{ fmtInt(plan.creditsNow) }}</span>
           </div>
         </div>
 
@@ -326,13 +348,11 @@ function useFreePoint(): void {
           </p>
           <p v-else class="zero-in">
             <ClockCircleOutlined />
-            {{ plan.zeroRemain.d }} 天 {{ plan.zeroRemain.h }} 小时
-            {{ plan.zeroRemain.m }} 分后进入 $0
+            每天下降 {{ fmtUsd(plan.dailyDropUsd) }} · ≈ {{ fmtCny(plan.dailyDropUsd) }}
           </p>
           <p class="zero-at">
-            <span class="muted">免单临界：</span>
-            <span class="num">{{ fmtLocal(plan.zeroAtMs) }}</span>
-            <span v-if="plan.alwaysFree" class="muted">（整月任意时刻首订均免单）</span>
+            <span class="muted">{{ plan.alwaysFree ? '整月任意时刻首订均免单' : '月末归零：' }}</span>
+            <span v-if="!plan.alwaysFree" class="num">{{ fmtLocal(win.endUtc) }}</span>
           </p>
         </div>
       </a-card>
@@ -374,7 +394,7 @@ function useFreePoint(): void {
               class="field-control"
               :placeholder="targetCurrency === 'usd' ? '如 10.00' : '如 69.73'"
             />
-            <a-button class="free-btn" @click="useFreePoint">$0 免单点</a-button>
+            <a-button class="free-btn" @click="useFreePoint">$0（月末）</a-button>
           </div>
         </div>
       </div>
@@ -599,6 +619,11 @@ function useFreePoint(): void {
 
 .num {
   font-variant-numeric: tabular-nums;
+}
+
+.accent-num {
+  color: var(--kal-primary);
+  font-weight: 600;
 }
 
 .pay-box {
