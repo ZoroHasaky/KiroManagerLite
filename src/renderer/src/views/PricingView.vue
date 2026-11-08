@@ -10,18 +10,19 @@
  * 订阅积分同样线性折算，但新号 500 赠送积分是固定额度，不参与折算：
  *   当月积分 = round(全额积分 × 剩余比例) + 500
  *
- * 价格随时间单调下降，所以「目标价 → 时间点」有唯一解：
- *   ratio* = 目标价 / (原月费 − 券)，时刻 = 月末 − 全月秒数 × ratio*
  * 原月费高于券的档位只在月末才到 $0，不存在月中的免单点。
+ *
+ * 页面默认按当前时间实时计算；拖动时间滑块可预览本月内任意节点（每天 10/14/18/22 点），
+ * 四张套餐卡片与基准信息一起跟随选中时刻重算。
  *
  * 纯前端本地计算，不依赖主进程与网络：所有数字都来自本机时钟。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import {
   CalendarOutlined,
-  ExclamationCircleOutlined,
-  MoneyCollectOutlined,
-  SearchOutlined
+  ClockCircleOutlined,
+  FieldTimeOutlined,
+  MoneyCollectOutlined
 } from '@ant-design/icons-vue'
 
 /** 美元 → 人民币参考汇率（固定值，与参考实现同一口径，不随行情自动更新） */
@@ -71,22 +72,6 @@ function round2(n: number): number {
 /** 新号首订实付：原月费减首订券后整体按剩余比例折算 */
 function firstSubPayUsd(price: number, ratio: number): number {
   return round2(Math.max(0, price - FIRST_SUB_COUPON_USD) * ratio)
-}
-
-/**
- * 反向求解：本月内首订实付恰好等于 targetUsd 的时刻。
- * 目标价高于月初实付（原月费 − 券）或为负时无解。
- */
-function solveTimeForTarget(
-  price: number,
-  targetUsd: number,
-  win: MonthWindow
-): { atUtcMs: number; ratio: number } | null {
-  if (!Number.isFinite(targetUsd)) return null
-  const maxPay = firstSubPayUsd(price, 1)
-  if (targetUsd < 0 || targetUsd > maxPay) return null
-  const ratio = Math.min(1, Math.max(0, targetUsd / (price - FIRST_SUB_COUPON_USD)))
-  return { atUtcMs: win.endUtc - win.totalSec * ratio * 1000, ratio }
 }
 
 // ============ 格式化 ============
@@ -141,14 +126,124 @@ onBeforeUnmount(() => {
   if (timer) clearInterval(timer)
 })
 
-const win = computed(() => getMonthWindow(now.value))
-const remainSec = computed(() => Math.max(0, (win.value.endUtc - now.value) / 1000))
+/** 只在本月变化时才改值，避免每秒重算月份窗口与滑块节点 */
+const monthStartUtc = computed(() => {
+  const d = new Date(now.value)
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)
+})
+const win = computed(() => getMonthWindow(monthStartUtc.value))
+
+/** 本地日期的零点，跨天时才变，用作节点列表的起点 */
+const dayAnchor = computed(() => {
+  const d = new Date(now.value)
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+})
+
+/** 每天的 4 个时间节点（本地时间） */
+const NODE_HOURS = [10, 14, 18, 22]
+
+interface TimeNode {
+  /** 该节点的绝对时刻 */
+  ms: number
+}
+
+/**
+ * 从今天起到本计费月结束，逐日铺 4 个时间节点。
+ * 起点用本地日期，终点用 UTC 月末，避免跨时区时越过了本该结束的月份。
+ * 列表在一次访问内保持稳定，拖动时下标不会漂移。
+ */
+const timeNodes = computed<TimeNode[]>(() => {
+  const w = win.value
+  const anchor = new Date(dayAnchor.value)
+  const list: TimeNode[] = []
+  // 最多 31 天，留一点余量防时区/月末边界把循环卡住
+  for (let i = 0; i < 33; i++) {
+    const dayStart = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate() + i)
+    if (dayStart.getTime() > w.endUtc) break
+    for (const hour of NODE_HOURS) {
+      const ms = new Date(
+        dayStart.getFullYear(),
+        dayStart.getMonth(),
+        dayStart.getDate(),
+        hour
+      ).getTime()
+      if (ms > w.endUtc) continue
+      list.push({ ms })
+    }
+  }
+  // 月末最后一刻之后没有任何节点时，留一个当前时刻，保证滑块始终可用
+  if (!list.length) list.push({ ms: Math.min(now.value, w.endUtc) })
+  return list
+})
+
+/** 实时模式：按当前时间每秒重算；预览模式：锁定滑块选中的节点 */
+const followNow = ref(true)
+const pickedIndex = ref(0)
+
+const effectiveMs = computed(() =>
+  followNow.value ? now.value : (timeNodes.value[pickedIndex.value]?.ms ?? now.value)
+)
+
+/** 滑块位置：实时模式下停在离当前时间最近的节点上 */
+const sliderIndex = computed(() => {
+  if (!followNow.value) return Math.min(pickedIndex.value, timeNodes.value.length - 1)
+  let best = 0
+  let bestDiff = Number.POSITIVE_INFINITY
+  timeNodes.value.forEach((node, i) => {
+    const diff = Math.abs(node.ms - now.value)
+    if (diff < bestDiff) {
+      bestDiff = diff
+      best = i
+    }
+  })
+  return best
+})
+
+const sliderMax = computed(() => Math.max(0, timeNodes.value.length - 1))
+
+/** 刻度只标每天的第一个节点；天数多时隔几天标一次，避免标签重叠 */
+const sliderMarks = computed(() => {
+  const marks: Record<number, { style: Record<string, string>; label: string }> = {}
+  const nodes = timeNodes.value
+  if (!nodes.length) return marks
+  const dayCount = Math.ceil(nodes.length / NODE_HOURS.length)
+  const stride = dayCount <= 8 ? 1 : Math.ceil(dayCount / 6)
+  nodes.forEach((node, i) => {
+    if (i % NODE_HOURS.length !== 0) return
+    if ((i / NODE_HOURS.length) % stride !== 0) return
+    const d = new Date(node.ms)
+    marks[i] = {
+      style: { whiteSpace: 'nowrap', fontSize: '11px' },
+      label: `${d.getMonth() + 1}-${d.getDate()}`
+    }
+  })
+  return marks
+})
+
+function tipFormatter(value: number | undefined): string {
+  const node = value === undefined ? undefined : timeNodes.value[value]
+  if (!node) return ''
+  const d = new Date(node.ms)
+  return `${d.getMonth() + 1}-${d.getDate()} ${pad2(d.getHours())}:00`
+}
+
+function onSlide(value: number | [number, number]): void {
+  if (Array.isArray(value)) return
+  pickedIndex.value = value
+  followNow.value = false
+}
+
+function resetToNow(): void {
+  followNow.value = true
+}
+
+const remainSec = computed(() => Math.max(0, (win.value.endUtc - effectiveMs.value) / 1000))
 /** 当月剩余比例：月初为 1，月末趋近 0 */
 const ratio = computed(() =>
   Math.min(1, Math.max(0, remainSec.value / win.value.totalSec))
 )
 const remain = computed(() => breakdown(remainSec.value))
-const elapsedPct = computed(() => ((1 - ratio.value) * 100).toFixed(1))
+const remainPct = computed(() => (ratio.value * 100).toFixed(1))
 
 const monthLabel = computed(() => {
   const d = new Date(win.value.startUtc)
@@ -173,52 +268,6 @@ const planCards = computed(() =>
   })
 )
 
-// ============ 反向查询 ============
-
-const targetPlanKey = ref('pro_max')
-const targetInput = ref<number | null>(null)
-const targetCurrency = ref<'usd' | 'cny'>('usd')
-
-const targetPlan = computed(() => PLANS.find((p) => p.key === targetPlanKey.value) ?? null)
-
-const planOptions = PLANS.map((p) => ({
-  value: p.key,
-  label: `${p.name} · ${fmtUsd(p.price)}/月 · ${fmtInt(p.credits)} credits`
-}))
-
-const reverseResult = computed(() => {
-  const plan = targetPlan.value
-  const raw = targetInput.value
-  if (!plan || raw === null || !Number.isFinite(raw)) return null
-
-  // 原月费不高于首订券：整月任意时刻都是 $0，没有唯一时间点
-  if (plan.price <= FIRST_SUB_COUPON_USD) {
-    return raw === 0
-      ? ({ kind: 'alwaysFree' } as const)
-      : ({ kind: 'unreachable', maxPay: 0 } as const)
-  }
-
-  const targetUsd = targetCurrency.value === 'usd' ? raw : raw / USD_TO_CNY
-  const solved = solveTimeForTarget(plan.price, targetUsd, win.value)
-  if (!solved) {
-    return { kind: 'unreachable', maxPay: firstSubPayUsd(plan.price, 1) } as const
-  }
-  const deltaMs = solved.atUtcMs - now.value
-  return {
-    kind: 'solved',
-    targetUsd: round2(targetUsd),
-    atUtcMs: solved.atUtcMs,
-    ratio: solved.ratio,
-    deltaMs,
-    // 60 秒容差内视为正处在该价格点
-    isNow: Math.abs(deltaMs) < 60_000,
-    countdown: breakdown(Math.abs(deltaMs) / 1000)
-  } as const
-})
-
-function useFreePoint(): void {
-  targetInput.value = 0
-}
 </script>
 
 <template>
@@ -230,7 +279,7 @@ function useFreePoint(): void {
         <div class="hero-text">
           <h2 class="hero-title">实时价格</h2>
           <p class="hero-desc">
-            Kiro 新号首订价格与积分，按 UTC 自然月线性折算（含人民币换算与反向查询）
+            Kiro 新号首订价格与积分，按 UTC 自然月线性折算（拖动滑块可预览本月任意时间节点）
           </p>
         </div>
       </div>
@@ -250,12 +299,12 @@ function useFreePoint(): void {
 
       <div class="basis-grid">
         <div class="basis-item">
-          <span class="basis-label">本地时间</span>
-          <span class="basis-value">{{ fmtLocal(now) }}</span>
+          <span class="basis-label">{{ followNow ? '本地时间（当前）' : '本地时间（预览）' }}</span>
+          <span class="basis-value">{{ fmtLocal(effectiveMs) }}</span>
         </div>
         <div class="basis-item">
           <span class="basis-label">UTC</span>
-          <span class="basis-value">{{ fmtUtc(now) }}</span>
+          <span class="basis-value">{{ fmtUtc(effectiveMs) }}</span>
         </div>
         <div class="basis-item">
           <span class="basis-label">当前自然月</span>
@@ -265,7 +314,7 @@ function useFreePoint(): void {
           <span class="basis-label">当月剩余</span>
           <span class="basis-value accent">
             {{ remain.d }} 天 {{ remain.h }} 小时 {{ remain.m }} 分
-            <span class="muted">（剩余 {{ elapsedPct }}%）</span>
+            <span class="muted">（剩余 {{ remainPct }}%）</span>
           </span>
         </div>
       </div>
@@ -321,111 +370,35 @@ function useFreePoint(): void {
       </a-card>
     </div>
 
-    <!-- 反向查询 -->
-    <a-card class="reverse-card" :bordered="false">
+    <!-- 时间滑块 -->
+    <a-card class="timeline-card" :bordered="false">
       <div class="card-head">
-        <SearchOutlined class="card-head-icon" />
+        <FieldTimeOutlined class="card-head-icon" />
         <div>
-          <div class="card-title">反向查询：目标价 → 时间点</div>
+          <div class="card-title">时间滑块</div>
           <div class="card-sub">
-            计算本月内首订实付恰好等于目标价的时间点（价格随时间只降不升，解唯一）
+            每天 10 点、14 点、18 点、22 点 4 个节点，拖动可预览该时刻的套餐数据
           </div>
         </div>
       </div>
 
-      <div class="query-row">
-        <div class="field">
-          <label class="field-label">套餐</label>
-          <a-select v-model:value="targetPlanKey" :options="planOptions" class="field-control" />
-        </div>
-
-        <a-radio-group v-model:value="targetCurrency" button-style="solid" class="currency">
-          <a-radio-button value="usd">$</a-radio-button>
-          <a-radio-button value="cny">¥</a-radio-button>
-        </a-radio-group>
-
-        <div class="field">
-          <label class="field-label">
-            目标实付价（{{ targetCurrency === 'usd' ? '美元' : '人民币' }}）
-          </label>
-          <div class="field-inline">
-            <a-input-number
-              v-model:value="targetInput"
-              :min="0"
-              :step="0.01"
-              :precision="2"
-              class="field-control"
-              :placeholder="targetCurrency === 'usd' ? '如 10.00' : '如 69.73'"
-            />
-            <a-button class="free-btn" @click="useFreePoint">$0（月末）</a-button>
-          </div>
-        </div>
+      <div class="timeline-status">
+        <span class="timeline-badge" :class="{ 'is-live': followNow }">
+          <ClockCircleOutlined />
+          {{ followNow ? '当前时间（实时跟进）' : '预览时间' }}
+        </span>
+        <span class="timeline-time">{{ fmtLocal(effectiveMs) }}</span>
+        <a-button size="small" class="now-btn" @click="resetToNow">当前时间</a-button>
       </div>
 
-      <!-- 有解：给出时间点与倒计时 -->
-      <div v-if="reverseResult?.kind === 'solved'" class="result-box">
-        <p v-if="reverseResult.isNow" class="result-now">当前正处于该价格点附近。</p>
-        <p v-else-if="reverseResult.deltaMs > 0" class="result-lead">
-          还有 {{ reverseResult.countdown.d }} 天 {{ reverseResult.countdown.h }} 小时
-          {{ reverseResult.countdown.m }} 分 {{ reverseResult.countdown.s }} 秒到达该价格
-        </p>
-        <p v-else class="result-lead muted">
-          该价格出现在 {{ reverseResult.countdown.d }} 天
-          {{ reverseResult.countdown.h }} 小时 {{ reverseResult.countdown.m }} 分前（当前实付已低于目标价）
-        </p>
-
-        <div class="result-grid">
-          <div>
-            <span class="basis-label">时间点（本地）</span>
-            <span class="basis-value">{{ fmtLocal(reverseResult.atUtcMs) }}</span>
-          </div>
-          <div>
-            <span class="basis-label">UTC</span>
-            <span class="basis-value">{{ fmtUtc(reverseResult.atUtcMs) }}</span>
-          </div>
-          <div>
-            <span class="basis-label">该时刻实付</span>
-            <span class="basis-value">
-              {{ fmtUsd(reverseResult.targetUsd) }} · {{ fmtCny(reverseResult.targetUsd) }}
-            </span>
-          </div>
-          <div>
-            <span class="basis-label">对应当月剩余比例</span>
-            <span class="basis-value">{{ (reverseResult.ratio * 100).toFixed(2) }}%</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- 整月免单：原月费不高于首订券 -->
-      <a-alert
-        v-else-if="reverseResult?.kind === 'alwaysFree'"
-        type="success"
-        show-icon
-        :message="`${targetPlan?.name} 整月任意时刻首订均为 $0`"
-        description="该档位原月费不高于首订券面额，折算价始终被券覆盖，不存在唯一的价格时间点。"
+      <a-slider
+        :value="sliderIndex"
+        :max="sliderMax"
+        :step="1"
+        :marks="sliderMarks"
+        :tip-formatter="tipFormatter"
+        @change="onSlide"
       />
-
-      <!-- 无解：目标价高于月初实付 -->
-      <a-alert
-        v-else-if="reverseResult?.kind === 'unreachable'"
-        type="warning"
-        show-icon
-        :message="'目标价不可达'"
-        :description="
-          reverseResult.maxPay === 0
-            ? `${targetPlan?.name} 整月任意时刻首订均为 $0（券始终覆盖折算价），无法达到更高的实付价格。`
-            : `月初首订实付最高为 ${fmtUsd(reverseResult.maxPay)}（≈ ${fmtCny(reverseResult.maxPay)}），此后只降不升。请输入 0 ~ ${fmtUsd(reverseResult.maxPay)} 之间的目标价。`
-        "
-      />
-
-      <p v-else class="result-hint">
-        输入目标价后，这里会显示首订实付恰好等于该价的本地 / UTC 时间点、倒计时与对应的当月剩余比例。
-      </p>
-
-      <p class="result-note">
-        <ExclamationCircleOutlined />
-        价格与时间点均为本地按时钟推算，实际扣款以 Stripe 结算页为准。
-      </p>
     </a-card>
   </div>
 </template>
@@ -439,7 +412,7 @@ function useFreePoint(): void {
 
 .hero-card,
 .basis-card,
-.reverse-card,
+.timeline-card,
 .plan-card {
   border: 1px solid var(--kal-border);
   background: var(--kal-card-bg);
@@ -626,90 +599,53 @@ function useFreePoint(): void {
   font-variant-numeric: tabular-nums;
 }
 
-/* 反向查询 */
-.query-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
-  align-items: end;
-  gap: 12px;
-}
-
-.field {
+/* 时间滑块 */
+.timeline-status {
   display: flex;
-  flex-direction: column;
-  gap: 5px;
-  min-width: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 2px 0 18px;
 }
 
-.field-label {
+.timeline-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 999px;
   font-size: 12px;
   color: var(--kal-muted);
-}
-
-.field-control {
-  width: 100%;
-}
-
-.field-inline {
-  display: flex;
-  gap: 8px;
-}
-
-.free-btn {
-  flex: 0 0 auto;
-}
-
-.result-box {
-  margin-top: 14px;
-  padding: 12px 14px;
-  border-radius: 10px;
   background: var(--kal-block-bg);
 }
 
-.result-now {
-  margin: 0 0 10px;
+.timeline-badge.is-live {
+  color: var(--kal-primary);
+}
+
+.timeline-time {
   font-size: 13px;
   font-weight: 600;
-  color: #52c41a;
+  font-variant-numeric: tabular-nums;
 }
 
-.result-lead {
-  margin: 0 0 10px;
-  font-size: 13px;
+.now-btn {
+  margin-left: auto;
 }
 
-.result-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 10px;
-}
-
-.result-grid > div {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.result-hint,
-.result-note {
-  margin: 12px 0 0;
-  font-size: 12px;
-  line-height: 1.7;
+/* 滑块下方的日期刻度不参与点击热区，避免误触 */
+.timeline-card :deep(.ant-slider-mark-text) {
+  pointer-events: none;
   color: var(--kal-muted);
 }
 
-.result-note {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  margin-top: 14px;
-  padding-top: 10px;
-  border-top: 1px solid var(--kal-border);
+.timeline-card :deep(.ant-slider) {
+  margin-bottom: 30px;
 }
 
 @media (max-width: 860px) {
-  .query-row {
-    grid-template-columns: 1fr;
+  .timeline-status {
+    gap: 8px;
   }
 }
 </style>
