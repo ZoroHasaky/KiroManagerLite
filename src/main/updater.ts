@@ -1,8 +1,12 @@
-// 检查更新：只读 GitHub Releases 的最新版本号做对比，不做自动下载安装
+// 检查更新：读 GitHub Releases 的最新版本号做对比，并找出对应的热更资源包
+//
+// 资源包与安装包是同一份 Release 的两个资产：前者供已装引导层的新版本热更，
+// 后者供老用户/首次安装。这里只负责「查」，下载与安装见 packManager。
 import { app } from 'electron'
 import { httpRequest } from './net'
 import { sleep } from './utils'
-import type { UpdateCheckResult } from '../shared/types'
+import { currentVersion } from './packManager'
+import type { PackAssetInfo, UpdateCheckResult } from '../shared/types'
 
 const REPO = 'ZoroHasaky/KiroManagerLite'
 const LATEST_API = `https://api.github.com/repos/${REPO}/releases/latest`
@@ -10,12 +14,28 @@ const LATEST_PAGE = `https://github.com/${REPO}/releases/latest`
 /** 「前往更新」统一落到 Releases 列表页，方便用户自己挑平台安装包与历史版本 */
 const RELEASES_PAGE = `https://github.com/${REPO}/releases`
 
+interface GithubAsset {
+  name?: string
+  browser_download_url?: string
+  size?: number
+  digest?: string | null
+}
+
 interface GithubRelease {
   tag_name?: string
   name?: string
   body?: string
   published_at?: string
+  assets?: GithubAsset[]
 }
+
+/**
+ * 资源包的资产命名规则，必须与 scripts/make-pack.mjs 保持一致：
+ *   kiro-pack-<platform>-<arch>-<version>.tar.gz
+ *   kiro-pack-<platform>-<arch>-<version>.tar.gz.sha256
+ * 用文件名里的平台架构筛选，而不是靠 Release 里的顺序。
+ */
+const PACK_ASSET_RE = /^kiro-pack-(.+?)-(.+?)-(.+?)\.tar\.gz$/
 
 /** 去掉 tag 常见前缀，`v1.0.3` / `V1.0.3` / `release-1.0.3` 都归一成 `1.0.3` */
 function normalizeVersion(raw: string): string {
@@ -79,6 +99,47 @@ function resultOf(
   }
 }
 
+/**
+ * 在 Release 资产里找当前平台架构的资源包。
+ *
+ * 找不到是常态而不是错误：CI 可能只产出了安装包，或者这次发布没带热更包。
+ * 这种情况返回 url 为 null，界面据此禁用「下载更新」并保留跳转 Releases。
+ */
+function packAssetOf(release: GithubRelease, version: string): PackAssetInfo {
+  const target = `${process.platform}-${process.arch}`
+  const assets = Array.isArray(release.assets) ? release.assets : []
+
+  const match = assets.find((asset) => {
+    const name = asset.name || ''
+    const parsed = PACK_ASSET_RE.exec(name)
+    if (!parsed) return false
+    // 平台与架构必须完全一致：资源包里带原生模块，装错架构会在启动时崩
+    return `${parsed[1]}-${parsed[2]}` === target && parsed[3] === version
+  })
+
+  if (!match?.browser_download_url) {
+    return { version, url: null, sha256: null, size: null, target }
+  }
+
+  /*
+   * 校验值有两种来源：GitHub 自 2025 起给资产提供 digest（sha256:...），
+   * 以及我们额外上传的 .sha256 文本资产（兼容 digest 不可用的情况）。
+   * 这里只取 digest——.sha256 文件需要额外一次请求，放在下载流程里按需读取。
+   */
+  const digest = typeof match.digest === 'string' ? match.digest : ''
+  const sha256 = digest.startsWith('sha256:') ? digest.slice('sha256:'.length) : null
+  const checksumAsset = assets.find((a) => a.name === `${match.name}.sha256`)
+
+  return {
+    version,
+    url: match.browser_download_url,
+    // digest 缺失时退回读 .sha256 附件的能力，由调用方决定要不要拉
+    sha256: sha256 ?? (checksumAsset ? '' : null),
+    size: typeof match.size === 'number' ? match.size : null,
+    target
+  }
+}
+
 function nestedErrorCode(error: unknown): string {
   let current = error
   const visited = new Set<unknown>()
@@ -139,7 +200,8 @@ async function checkViaApi(current: string): Promise<UpdateCheckResult> {
   const release = await res.json<GithubRelease>()
   const latest = normalizeVersion(release.tag_name || '')
   if (!latest) throw new UpdateSourceError('未能解析 GitHub API 返回的版本号', false)
-  return resultOf(current, latest, release)
+  const result = resultOf(current, latest, release)
+  return { ...result, pack: packAssetOf(release, latest) }
 }
 
 /**
@@ -173,7 +235,9 @@ async function checkViaReleasePage(current: string): Promise<UpdateCheckResult> 
 }
 
 async function runCheck(): Promise<UpdateCheckResult> {
-  const current = app.getVersion()
+  // 用当前实际运行的版本比较：热更之后 app.getVersion() 仍是安装包版本，
+  // 拿它比较会永远认为「有新版本」，从而反复提示已装过的包
+  const current = currentVersion()
   let apiError: unknown
 
   for (let attempt = 1; attempt <= API_ATTEMPTS; attempt++) {

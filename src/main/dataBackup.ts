@@ -34,6 +34,7 @@ import {
 import { flushUsageHistory } from './usageHistory'
 import { flushGatewayHistory } from './gatewayHistory'
 import { flushProxyData } from './proxyServer'
+import { currentVersion } from './packManager'
 import type { AccountStoreData, DataBackupSummary, KeyGatewayData, ProxyApiKey } from '../shared/types'
 
 const FORMAT = 'kiro-manager-lite-data'
@@ -112,7 +113,7 @@ export function buildBackup(): string {
   const file: DataFile = {
     format: FORMAT,
     schemaVersion: SCHEMA_VERSION,
-    appVersion: app.getVersion(),
+    appVersion: currentVersion(),
     exportedAt: at,
     exportedAtText: localIso(at),
     platform: process.platform,

@@ -115,10 +115,14 @@ jobs:
           - label: Windows x64
             os: windows-latest
             script: build:win
+            pack-platform: win32
+            pack-arch: x64
             artifacts: |
               dist/*.exe
               dist/*.blockmap
               dist/latest.yml
+              dist/kiro-pack-*.tar.gz
+              dist/kiro-pack-*.tar.gz.sha256
           # macOS arm64（Apple Silicon）。只出 dmg + zip，不产 pkg。
           #
           # 不用 macos-latest：它指向 macOS 26 Arm64，容量最紧张，实测排队 15 分钟后
@@ -127,11 +131,15 @@ jobs:
           - label: macOS arm64
             os: macos-15
             script: build:mac:arm
+            pack-platform: darwin
+            pack-arch: arm64
             artifacts: |
               dist/*.dmg
               dist/*.zip
               dist/*.blockmap
               dist/latest-mac.yml
+              dist/kiro-pack-*.tar.gz
+              dist/kiro-pack-*.tar.gz.sha256
     steps:
       - uses: actions/checkout@v4
 
@@ -166,6 +174,18 @@ jobs:
       # 这里再传一次会被 yargs 收成数组导致判定为「要发布」，脚本里已做了滤重。
       - name: 打包
         run: npm run ${{ matrix.script }} -- --publish never
+
+      # 生成热更新资源包：主进程 + preload + 渲染层 + 资源 + 生产依赖。
+      # 平台与架构显式传入，避免 runner 与目标不一致时打出错包。
+      # PACK_ELECTRON_VERSION 显式传入：清单里的 Electron 版本必须与应用一致，
+      # 应用会据此拒绝 ABI 不匹配的资源包。
+      - name: 生成热更新资源包
+        shell: bash
+        run: |
+          ELECTRON_VERSION="$(node -p "require('./node_modules/electron/package.json').version")"
+          echo "Electron $ELECTRON_VERSION"
+          PACK_ELECTRON_VERSION="$ELECTRON_VERSION" node scripts/make-pack.mjs \
+            --platform ${{ matrix.pack-platform }} --arch ${{ matrix.pack-arch }}
 
       # 只在 macOS runner 上能跑：校验 .app 的签名是否真的落到了产物里。
       #

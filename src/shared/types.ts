@@ -1313,6 +1313,53 @@ export interface UpdateCheckResult {
   notes: string
   /** 发布时间 ISO 字符串，可能为空 */
   publishedAt: string
+  /**
+   * 当前平台的热更资源包。
+   * 只有走 GitHub API 检查时才会带上；页面兜底链路解析不到资产，缺省。
+   */
+  pack?: PackAssetInfo
+}
+
+/**
+ * 远端资源包资产描述，由检查更新接口返回。
+ *
+ * url 为 null 表示这次发布没有提供当前平台架构的热更包，
+ * 界面应退回「打开 Releases 下载完整安装包」。
+ */
+export interface PackAssetInfo {
+  version: string
+  url: string | null
+  /** 期望的 sha256；为 null 表示上游没提供，只能跳过校验 */
+  sha256: string | null
+  size: number | null
+  /** 平台-架构标识，如 win32-x64 */
+  target: string
+}
+
+/**
+ * 资源包（热更新）状态。
+ *
+ * 区分三个版本：base 是安装包自带的，active 是当前正在跑的，pending 是
+ * 已解压、等重启生效的。三者相同时说明没有热更介入。
+ */
+export interface RendererPackStatus {
+  /** 当前是否运行在安装包内（开发模式为 false，不支持热更） */
+  packed: boolean
+  /** 当前生效的资源包版本，没有则 null */
+  activeVersion: string | null
+  /** 安装包内置版本 */
+  baseVersion: string
+  /** 已下载解压、等重启生效的版本，没有则 null */
+  pendingVersion: string | null
+  /** 当前运行是否真的来自资源包（而非安装包内置代码） */
+  runningFromPack: boolean
+}
+
+/** 资源包下载进度 */
+export interface PackDownloadProgress {
+  received: number
+  total: number
+  percent: number
 }
 
 /**

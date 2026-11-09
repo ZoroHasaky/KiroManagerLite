@@ -179,6 +179,16 @@ const api = {
   getAppInfo: () => invoke('app:info'),
   checkUpdate: () => invoke('app:check-update'),
 
+  // 资源包热更新：状态查询、下载安装、重启与回退
+  getPackStatus: () => invoke('update:pack-status'),
+  downloadPack: (version: string, asset: unknown) => invoke('update:pack-download', version, asset),
+  installPack: (version: string) => invoke('update:pack-install', version),
+  discardPack: (version?: string) => invoke('update:pack-discard', version),
+  relaunchForUpdate: () => invoke('update:relaunch'),
+  rollbackPack: () => invoke('update:pack-rollback'),
+  onPackProgress: (handler: (payload: unknown) => void) =>
+    subscribe('update:pack-progress', handler),
+
   // 常用工具：Kiro Agent 权限
   getShellAutoApproveStatus: () => invoke('tools:shell-approve-status'),
   enableShellAutoApprove: () => invoke('tools:shell-approve-enable'),

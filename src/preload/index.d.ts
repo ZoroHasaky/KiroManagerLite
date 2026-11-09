@@ -57,9 +57,12 @@ import type {
   LogQuery,
   LogQueryResult,
   PaymentAddress,
+  PackAssetInfo,
+  PackDownloadProgress,
   PaymentStartInput,
   PaymentUpdate,
   ProactiveRenewalPayload,
+  RendererPackStatus,
   SubscriptionEntry,
   SubscriptionPlan,
   SwitchAccountInput,
@@ -271,6 +274,23 @@ export interface Api {
   saveSettings: (patch: Partial<AppSettings>) => Promise<IpcResult<AppSettings>>
   getAppInfo: () => Promise<IpcResult<AppInfo>>
   checkUpdate: () => Promise<IpcResult<UpdateCheckResult>>
+
+  /** 资源包热更新状态 */
+  getPackStatus: () => Promise<IpcResult<RendererPackStatus>>
+  /** 下载指定版本的资源包；进度通过 onPackProgress 事件推送 */
+  downloadPack: (
+    version: string,
+    asset: Pick<PackAssetInfo, 'url' | 'sha256' | 'size'>
+  ) => Promise<IpcResult<{ file: string }>>
+  installPack: (version: string) => Promise<IpcResult<{ version: string }>>
+  discardPack: (version?: string) => Promise<IpcResult<RendererPackStatus>>
+  /** 重启应用，让已安装的资源包生效 */
+  relaunchForUpdate: () => Promise<IpcResult<{ relaunched: boolean; version: string }>>
+  /** 回退到安装包内置版本（重启后生效） */
+  rollbackPack: () => Promise<IpcResult<RendererPackStatus>>
+  onPackProgress: (
+    handler: (payload: PackDownloadProgress & { version: string }) => void
+  ) => () => void
   getShellAutoApproveStatus: () => Promise<IpcResult<ShellAutoApproveStatus>>
   enableShellAutoApprove: () => Promise<IpcResult<ShellAutoApproveStatus>>
   disableShellAutoApprove: () => Promise<IpcResult<ShellAutoApproveStatus>>

@@ -1,8 +1,9 @@
 import { app, dialog, ipcMain, nativeImage, screen, shell, BrowserWindow } from 'electron'
 import { join } from 'path'
+import { existsSync } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { applyRuntimeSettings, registerIpc } from './ipc'
-import { flushStore, getSettings } from './store'
+import { flushStore, getSettings, getWindowBounds, setWindowBounds } from './store'
 import { normalizePortalLocale } from '../shared/portalLocale'
 import { closePortalWindow } from './kiroPortal'
 import { shutdownExternalPortalsSync } from './externalPortal'
@@ -35,6 +36,7 @@ import { initializeKeyService, shutdownKeyServiceSync } from './keyService'
 import { initProxyServer, shutdownProxySync } from './proxyServer'
 import { applyThemeMode, windowBackground } from './appearance'
 import { initBackupScheduler, stopBackupScheduler } from './backupScheduler'
+import { activePackRoot, currentVersion, sanityCheckActivePack } from './packManager'
 
 /*
  * 按设置里的地区指定 Chromium 区域。
@@ -54,10 +56,25 @@ let isQuitting = false
  * 开发时直接读仓库里的源文件。mac 与 win 用两套不同留白的图。
  */
 function appIconPath(name: 'mac-icon' | 'windows-icon'): string {
-  const dir = app.isPackaged
-    ? join(process.resourcesPath, 'app.asar.unpacked', 'resources', 'icons')
-    : join(__dirname, '../../resources/icons')
+  const dir = resourceDir('icons')
   return join(dir, `${name}.png`)
+}
+
+/**
+ * 随包静态资源目录（图标、托盘图）。
+ *
+ * 三个来源按优先级：开发时读仓库里的源文件；热更时读资源包自带的 resources；
+ * 其余情况读安装包 asarUnpack 出来的那份。资源包里的图标必须跟代码同版本，
+ * 否则热更换了托盘图标样式却还显示旧的。
+ */
+function resourceDir(name: 'icons' | 'tray'): string {
+  if (!app.isPackaged) return join(__dirname, '../../resources', name)
+  const packRoot = activePackRoot()
+  if (packRoot) {
+    const inPack = join(packRoot, 'resources', name)
+    if (existsSync(inPack)) return inPack
+  }
+  return join(process.resourcesPath, 'app.asar.unpacked', 'resources', name)
 }
 
 /**
@@ -72,11 +89,73 @@ function defaultWindowSize(): { width: number; height: number } {
   }
 }
 
+/**
+ * 恢复上次退出时的窗口尺寸。
+ *
+ * 保存的位置可能已经无效（外接屏拔掉、分辨率变小、多屏换布局），
+ * 这时只沿用尺寸、丢掉坐标，让系统把窗口放到主屏中央，
+ * 否则会出现「窗口在屏幕外，点开什么也看不见」。
+ * 尺寸同样要按当前屏幕收一遍，不能比工作区还大。
+ */
+function restoredWindowBounds(): {
+  width: number
+  height: number
+  x?: number
+  y?: number
+  maximized: boolean
+} {
+  const fallback = { ...defaultWindowSize(), maximized: false }
+  const saved = getWindowBounds()
+  if (!saved) return fallback
+
+  // 下限用最小窗口尺寸，上限按当前主屏工作区收：换了更小的屏幕也不会撑出边界
+  const { width: aw, height: ah } = screen.getPrimaryDisplay().workAreaSize
+  const width = Math.min(Math.max(940, saved.width), Math.max(940, aw))
+  const height = Math.min(Math.max(620, saved.height), Math.max(620, ah))
+
+  // 坐标必须落在某个显示器的工作区里，且窗口至少有一角可见
+  let x: number | undefined
+  let y: number | undefined
+  const savedX = saved.x
+  const savedY = saved.y
+  if (savedX !== undefined && savedY !== undefined) {
+    const visible = screen.getAllDisplays().some((display) => {
+      const area = display.workArea
+      const overlapX = Math.min(savedX + width, area.x + area.width) - Math.max(savedX, area.x)
+      const overlapY = Math.min(savedY + height, area.y + area.height) - Math.max(savedY, area.y)
+      return overlapX > 120 && overlapY > 60
+    })
+    if (visible) {
+      x = savedX
+      y = savedY
+    }
+  }
+  return { width, height, x, y, maximized: saved.maximized }
+}
+
+/** 把当前窗口的位置与尺寸写回配置；最大化时记普通尺寸，下次还原后仍可最大化 */
+function saveWindowBounds(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  const bounds = mainWindow.getNormalBounds()
+  if (!bounds.width || !bounds.height) return
+  setWindowBounds({
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    maximized: mainWindow.isMaximized()
+  })
+}
+
 function createWindow(): void {
-  const { width, height } = defaultWindowSize()
+  const restored = restoredWindowBounds()
   mainWindow = new BrowserWindow({
-    width,
-    height,
+    width: restored.width,
+    height: restored.height,
+    // 坐标无效时省略，交给系统按默认位置摆放
+    ...(restored.x !== undefined && restored.y !== undefined
+      ? { x: restored.x, y: restored.y }
+      : {}),
     minWidth: 940,
     minHeight: 620,
     show: false,
@@ -96,7 +175,36 @@ function createWindow(): void {
     }
   })
 
-  mainWindow.on('ready-to-show', () => mainWindow?.show())
+  mainWindow.on('ready-to-show', () => {
+    // 上次退出时是最大化：先 show 再 maximize，避免从还原尺寸闪一下
+    if (restored.maximized) mainWindow?.maximize()
+    mainWindow?.show()
+  })
+
+  /*
+   * 窗口尺寸的保存时机：
+   *  - resize / move 时攒一下再写，拖动过程中每帧都写会把配置库刷爆
+   *  - close 时立刻写一次，这是最可靠的保存点：退出应用会逐个触发 close，
+   *    最小化到托盘时窗口虽然隐藏但仍在，尺寸也没变
+   * 最大化时 getNormalBounds 给的是还原后的尺寸，下次仍能按原尺寸还原。
+   */
+  let boundsTimer: NodeJS.Timeout | null = null
+  const scheduleSaveBounds = (): void => {
+    if (boundsTimer) clearTimeout(boundsTimer)
+    boundsTimer = setTimeout(() => {
+      boundsTimer = null
+      saveWindowBounds()
+    }, 400)
+  }
+  mainWindow.on('resize', scheduleSaveBounds)
+  mainWindow.on('move', scheduleSaveBounds)
+  mainWindow.on('close', () => {
+    if (boundsTimer) {
+      clearTimeout(boundsTimer)
+      boundsTimer = null
+    }
+    saveWindowBounds()
+  })
 
   // 渲染进程加载失败时留下线索：dev 模式下最常见的原因是 Vite dev server 已停止
   mainWindow.webContents.on('did-fail-load', (_e, code, desc, url) => {
@@ -226,6 +334,9 @@ app.on('open-url', (event, url) => {
 })
 
 app.whenReady().then(() => {
+  // 先确认当前生效的资源包是否还完整：坏了就摘掉记录，下次启动回退内置版本。
+  // 这次运行用的仍是已加载的代码，不必中断。
+  sanityCheckActivePack()
   electronApp.setAppUserModelId('dev.kiro.account.lite')
 
   // 日志中心要最先启动，后面各模块的启动日志才不会漏
@@ -253,7 +364,7 @@ app.whenReady().then(() => {
   // 本地反代：状态与请求日志主动推给界面；配置里开了自动启动就直接起服务
   initProxyServer(
     (event, payload) => sendToRenderer(mainWindow, `proxy:${event}`, payload),
-    app.getVersion()
+    currentVersion()
   )
   // macOS 顶部菜单栏（中文菜单 + 页面导航），其他平台维持默认
   setupAppMenu({ focusWindow, getWindow: () => mainWindow })

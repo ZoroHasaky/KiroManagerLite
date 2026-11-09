@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { message } from 'ant-design-vue'
 import { RocketFilled } from '@ant-design/icons-vue'
 import { useUpdateStore } from '@/stores/update'
 import { formatDate } from '@/utils/format'
@@ -8,6 +9,25 @@ import { handleMarkdownClick, renderMarkdown } from '@/utils/markdown'
 const updateStore = useUpdateStore()
 const update = computed(() => updateStore.result)
 const notesHtml = computed(() => renderMarkdown(update.value?.notes ?? ''))
+
+const packAvailable = computed(() => updateStore.packAvailable)
+const downloading = computed(() => updateStore.downloading)
+const installing = computed(() => updateStore.installing)
+const packReady = computed(() => updateStore.packReady)
+const packPhase = computed(() => updateStore.packPhase)
+const packProgress = computed(() => updateStore.packProgress)
+const packError = computed(() => updateStore.packError)
+
+/** 有热更包时直接在这里下载；没有就退回 Releases 页 */
+async function startPackUpdate(): Promise<void> {
+  const res = await updateStore.downloadAndInstall()
+  if (!res.ok) message.error(res.error || '更新失败')
+}
+
+async function relaunchNow(): Promise<void> {
+  const res = await updateStore.relaunch()
+  if (!res.ok) message.error(res.error || '重启失败')
+}
 
 function goUpdate(): void {
   const url = update.value?.releaseUrl
@@ -40,9 +60,35 @@ function goUpdate(): void {
       <div class="release-notes-title muted">更新说明</div>
       <div class="release-notes-body markdown" v-html="notesHtml" @click="handleMarkdownClick" />
     </div>
+    <div v-if="packAvailable" class="pack-box">
+      <div class="muted pack-tip">
+        可直接下载热更新包，完成后重启即可生效，无需重新安装。
+      </div>
+      <a-progress
+        v-if="packPhase === 'downloading' || packPhase === 'installing'"
+        :percent="packPhase === 'installing' ? 100 : packProgress"
+        :status="packPhase === 'installing' ? 'active' : 'normal'"
+        size="small"
+      />
+      <div v-if="packPhase === 'failed'" class="pack-error">{{ packError }}</div>
+      <div v-if="packReady" class="pack-ready">
+        <a-button type="primary" size="small" @click="relaunchNow">
+          重启并更新到 v{{ updateStore.packVersion }}
+        </a-button>
+        <a-button size="small" @click="updateStore.closeModal">稍后重启</a-button>
+      </div>
+    </div>
     <template #footer>
       <a-button @click="updateStore.closeModal">稍后再说</a-button>
-      <a-button type="primary" @click="goUpdate">前往更新</a-button>
+      <a-button @click="goUpdate">下载完整安装包</a-button>
+      <a-button
+        v-if="packAvailable && !packReady"
+        type="primary"
+        :loading="downloading || installing"
+        @click="startPackUpdate"
+      >
+        {{ installing ? '正在安装…' : downloading ? `下载中 ${packProgress}%` : '下载并更新' }}
+      </a-button>
     </template>
   </a-modal>
 </template>
@@ -74,4 +120,9 @@ function goUpdate(): void {
 .markdown :deep(li > p) { margin: 0; }
 .markdown :deep(a) { color: var(--kal-primary); }
 .markdown :deep(code) { padding: 1px 4px; border-radius: 4px; background: var(--kal-code-bg); }
+
+.pack-box { margin-top: 14px; padding: 12px; border-radius: 8px; background: var(--kal-block-bg); }
+.pack-tip { font-size: 12px; line-height: 1.7; }
+.pack-error { margin-top: 8px; font-size: 12px; line-height: 1.7; color: #ff4d4f; overflow-wrap: anywhere; }
+.pack-ready { display: flex; gap: 8px; margin-top: 10px; }
 </style>

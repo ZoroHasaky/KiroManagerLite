@@ -3,6 +3,8 @@ import { Tray, Menu, app, clipboard, nativeImage } from 'electron'
 import type { MenuItemConstructorOptions, NativeImage } from 'electron'
 import { join } from 'path'
 import type { TrayAction, TraySnapshot } from '../shared/types'
+import { existsSync } from 'fs'
+import { activePackRoot, currentVersion } from './packManager'
 
 let tray: Tray | null = null
 let snapshot: TraySnapshot = { total: 0, switchable: 0 }
@@ -21,9 +23,14 @@ let callbacks: TrayCallbacks | null = null
 const iconCache = new Map<string, NativeImage>()
 
 function iconDir(): string {
-  return app.isPackaged
-    ? join(process.resourcesPath, 'app.asar.unpacked', 'resources', 'tray')
-    : join(__dirname, '../../resources/tray')
+  if (!app.isPackaged) return join(__dirname, '../../resources/tray')
+  // 热更后托盘图标优先用资源包里的，保证与当前代码同版本
+  const packRoot = activePackRoot()
+  if (packRoot) {
+    const inPack = join(packRoot, 'resources', 'tray')
+    if (existsSync(inPack)) return inPack
+  }
+  return join(process.resourcesPath, 'app.asar.unpacked', 'resources', 'tray')
 }
 
 /** 菜单项小图标，统一缩放到 16x16 */
@@ -49,7 +56,7 @@ function disabled(label: string, iconName?: string): MenuItemConstructorOptions 
 
 function buildMenu(): Menu {
   const items: MenuItemConstructorOptions[] = [
-    disabled(`Kiro Manager Lite v${app.getVersion()}`, 'app'),
+    disabled(`Kiro Manager Lite v${currentVersion()}`, 'app'),
     { type: 'separator' },
     disabled(
       snapshot.email ? `已登录：${snapshot.email}` : '当前未登录 Kiro IDE',

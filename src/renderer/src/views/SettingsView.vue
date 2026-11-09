@@ -37,6 +37,7 @@ import {
   normalizePortalLocale
 } from '@shared/portalLocale'
 import { useSettingsStore } from '@/stores/settings'
+import { useUpdateStore } from '@/stores/update'
 import SettingSwitch from '@/components/common/SettingSwitch.vue'
 import PathMenu from '@/components/common/PathMenu.vue'
 import { useAccountsStore } from '@/stores/accounts'
@@ -48,6 +49,7 @@ import { bodyPopupContainer, confirmDanger } from '@/utils/ui'
 const settingsStore = useSettingsStore()
 const accountsStore = useAccountsStore()
 const keysStore = useKeysStore()
+const updateStore = useUpdateStore()
 
 const settings = computed(() => settingsStore.settings)
 const proxyDraft = ref(settingsStore.settings.proxyUrl)
@@ -58,6 +60,62 @@ const FORM_LAYOUT = {
   labelCol: { flex: '0 0 130px' },
   wrapperCol: { flex: '1 1 auto' }
 } as const
+
+// ============ 软件更新 ============
+/*
+ * 热更新只在安装包里可用：开发模式跑的是 dev server，替换资源包没有意义。
+ * 资源包覆盖主进程 + preload + 渲染层，所以改主进程代码也能通过它生效，
+ * 前提是这一版安装包已经带了 bootstrap 引导层。
+ */
+const packStatus = computed(() => updateStore.packStatus)
+const packPhase = computed(() => updateStore.packPhase)
+const packProgress = computed(() => updateStore.packProgress)
+const packError = computed(() => updateStore.packError)
+const updateChecking = computed(() => updateStore.checking)
+const updateResult = computed(() => updateStore.result)
+const packAvailable = computed(() => updateStore.packAvailable)
+
+const updateActionText = computed(() => {
+  if (packPhase.value === 'downloading') return `正在下载 ${packProgress.value}%`
+  if (packPhase.value === 'installing') return '正在解压校验…'
+  return '下载并更新'
+})
+
+const updateHint = computed(() => {
+  if (!updateResult.value) return ''
+  if (!updateResult.value.hasUpdate) return `已是最新版本（v${updateResult.value.current}）`
+  if (!packAvailable.value) {
+    return '这次发布没有提供当前平台的热更包，请打开 Releases 下载完整安装包。'
+  }
+  return `可热更到 v${updateResult.value.latest}，下载完成后重启即可生效。`
+})
+
+async function checkUpdate(): Promise<void> {
+  const res = await updateStore.checkNow()
+  updateStore.modalOpen = false
+  if (res.error) {
+    message.error(res.error)
+    return
+  }
+  await updateStore.refreshPackStatus()
+  message.success(res.data?.hasUpdate ? `发现新版本 v${res.data.latest}` : '已是最新版本')
+}
+
+async function startPackUpdate(): Promise<void> {
+  const res = await updateStore.downloadAndInstall()
+  if (!res.ok) message.error(res.error || '更新失败')
+  else message.success('资源包已就绪，重启后生效')
+}
+
+async function relaunchForUpdate(): Promise<void> {
+  const res = await updateStore.relaunch()
+  if (!res.ok) message.error(res.error || '重启失败')
+}
+
+async function discardPackUpdate(): Promise<void> {
+  await updateStore.discard()
+  message.info('已放弃待安装的资源包')
+}
 
 
 /** 下次刷新的时间与倒计时，跟着共享时钟每 5 秒重算 */
@@ -268,6 +326,8 @@ onMounted(async () => {
   offBackupStatus = window.api.onBackupStatus((status) => (backupState.value = status))
   const res = await window.api.getBackupStatus()
   if (res.success && res.data) backupState.value = res.data
+  // 进页面就同步一次资源包状态：上次装了但没重启的包要显示成「待重启」
+  await updateStore.refreshPackStatus()
 })
 onUnmounted(() => offBackupStatus?.())
 
@@ -892,6 +952,66 @@ function resetAll(): void {
       </ul>
     </a-card>
 
+    <a-card size="small" title="软件更新" style="margin-bottom: 16px">
+      <a-form v-bind="FORM_LAYOUT">
+        <a-form-item label="当前版本">
+          <span class="update-version">
+            v{{ packStatus?.activeVersion || packStatus?.baseVersion || settingsStore.appInfo?.version || '-' }}
+          </span>
+          <span v-if="packStatus?.runningFromPack" class="muted update-note">
+            来自资源包，安装包内置版本 v{{ packStatus.baseVersion }}
+          </span>
+          <span v-else-if="packStatus?.activeVersion" class="muted update-note">
+            来自资源包，安装包内置版本 v{{ packStatus.baseVersion }}
+          </span>
+        </a-form-item>
+
+        <a-form-item label="热更新">
+          <a-space wrap>
+            <a-button :loading="updateChecking" @click="checkUpdate">检查更新</a-button>
+            <a-button
+              v-if="updateResult?.hasUpdate && packAvailable"
+              type="primary"
+              :loading="packPhase === 'downloading' || packPhase === 'installing'"
+              :disabled="packPhase === 'ready'"
+              @click="startPackUpdate"
+            >
+              {{ updateActionText }}
+            </a-button>
+            <a-button
+              v-if="packPhase === 'ready'"
+              type="primary"
+              @click="relaunchForUpdate"
+            >
+              重启并更新到 v{{ updateStore.packVersion }}
+            </a-button>
+            <a-button v-if="packPhase === 'ready'" @click="discardPackUpdate">放弃</a-button>
+            <a-button
+              v-if="packStatus?.activeVersion"
+              @click="updateStore.rollback()"
+            >
+              回退到内置版本
+            </a-button>
+          </a-space>
+          <div v-if="updateHint" class="update-hint muted">{{ updateHint }}</div>
+          <a-progress
+            v-if="packPhase === 'downloading' || packPhase === 'installing'"
+            :percent="packPhase === 'installing' ? 100 : packProgress"
+            :status="packPhase === 'installing' ? 'active' : 'normal'"
+            size="small"
+            class="update-progress"
+          />
+          <div v-if="packPhase === 'failed'" class="update-error">{{ packError }}</div>
+        </a-form-item>
+      </a-form>
+      <ul class="tips">
+        <li>热更新会整份替换主进程、界面与随包资源，下载完成后点「重启并更新」即可生效，不必重新安装。</li>
+        <li>资源包按平台与架构分发，装错平台会被拒绝；下载后会逐文件校验，校验不通过不会启用。</li>
+        <li>极少数情况下新版本无法启动，应用会自动回退到安装包内置版本；也可以在这里手动回退。</li>
+        <li>开发模式（npm run dev）不支持热更新。</li>
+      </ul>
+    </a-card>
+
   </div>
 </template>
 
@@ -900,6 +1020,34 @@ function resetAll(): void {
  * 主题风格 / 主题色的选项卡：图标或色块在上、名称在下。
  * 选中项描边与文字换成主题色，右上角一个实心圆点；未选中的悬停时描边提亮。
  */
+.update-version {
+  margin-right: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.update-note,
+.update-hint {
+  font-size: 12px;
+}
+
+.update-hint {
+  margin-top: 6px;
+}
+
+.update-progress {
+  max-width: 420px;
+  margin-top: 8px;
+}
+
+.update-error {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: #ff4d4f;
+  overflow-wrap: anywhere;
+}
+
 .choice-group {
   display: flex;
   flex-wrap: wrap;

@@ -125,6 +125,17 @@ import {
 import { clearCustomPath, pickDialogOptions, resetInstallCache, saveCustomPath } from './proxyClientInstall'
 import { FALLBACK_MODEL_IDS } from '../shared/proxyModels'
 import { clearLogs, exportLogs, getLogDir, log, queryLogs } from './logger'
+import {
+  activatePack,
+  currentVersion,
+  discardPack,
+  downloadPack,
+  installPack,
+  packStatus,
+  pendingPackVersion,
+  rollbackPack
+} from './packManager'
+import { sendToRenderer } from './utils'
 import { kiroCliEnvStatus, kiroCliEnvWritten, removeKiroCliEnv, writeKiroCliEnv } from './kiroCliEnv'
 import { buildXlsx, buildZip } from './xlsxWriter'
 import {
@@ -688,7 +699,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   // ============ 应用 ============
   handle('app:info', () =>
     ok({
-      version: app.getVersion(),
+      version: currentVersion(),
       electron: process.versions.electron,
       chrome: process.versions.chrome,
       node: process.versions.node,
@@ -701,6 +712,72 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
 
   // 检查更新：对比 GitHub 最新 Release 的版本号，只给结论不做下载
   handle('app:check-update', async () => ok(await checkForUpdate()))
+
+  // ============ 资源包热更新 ============
+  /*
+   * 下载与安装分成两步而不是一步到位：下载失败的代价只是一次重试，
+   * 安装则会改动 userData 里的版本目录与 active.json，两者失败面完全不同。
+   * 全部由用户在设置页手动触发，不做后台静默下载。
+   */
+  handle('update:pack-status', async () => ok(packStatus()))
+
+  handle('update:pack-download', async (_e, version: unknown, asset: unknown) => {
+    if (typeof version !== 'string' || !/^\d+\.\d+\.\d+/.test(version)) {
+      return fail('资源包版本号无效')
+    }
+    const info = asset as { url?: unknown; sha256?: unknown; size?: unknown } | undefined
+    if (typeof info?.url !== 'string' || !/^https:\/\//i.test(info.url)) {
+      return fail('资源包下载地址无效')
+    }
+    const file = await downloadPack(
+      version,
+      {
+        url: info.url,
+        sha256: typeof info.sha256 === 'string' && info.sha256 ? info.sha256 : undefined,
+        size: typeof info.size === 'number' ? info.size : undefined
+      },
+      (progress) => sendToRenderer(getWindow(), 'update:pack-progress', { version, ...progress })
+    )
+    return ok(file)
+  })
+
+  handle('update:pack-install', async (_e, version: unknown) => {
+    if (typeof version !== 'string' || !version) return fail('资源包版本号无效')
+    const result = await installPack(version)
+    return ok(result)
+  })
+
+  handle('update:pack-discard', async (_e, version: unknown) => {
+    await discardPack(typeof version === 'string' && version ? version : undefined)
+    return ok(packStatus())
+  })
+
+  /*
+   * 重启并让已装好的资源包生效。
+   *
+   * 与 data:import 的重启不同，这里不需要手动停反代 / 交还协议：资源包只换代码，
+   * 账号数据没变，正常退出流程该做的事照做即可。用 flushStore 确保窗口尺寸、
+   * 设置这些刚写的东西落盘，然后 relaunch。
+   */
+  handle('update:relaunch', async () => {
+    const pending = pendingPackVersion()
+    if (pending) activatePack(pending)
+    flushStore()
+    if (!app.isPackaged) {
+      // 开发模式下 relaunch 只会连到已停止的 dev server，与 data:import 的处理一致
+      return ok({ relaunched: false, version: currentVersion() })
+    }
+    setTimeout(() => {
+      app.relaunch()
+      app.exit(0)
+    }, 300)
+    return ok({ relaunched: true, version: pending ?? currentVersion() })
+  })
+
+  handle('update:pack-rollback', async () => {
+    rollbackPack()
+    return ok(packStatus())
+  })
 
   // ============ 常用工具：Kiro Agent 权限 ============
   handle('tools:shell-approve-status', async () => ok(await getShellAutoApproveStatus()))

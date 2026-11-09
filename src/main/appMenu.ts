@@ -7,6 +7,7 @@ import type { BrowserWindow, MenuItemConstructorOptions } from 'electron'
 import { release, type as osType } from 'os'
 import { closeKiroIde, openKiroIde } from './kiroProcess'
 import { sendToRenderer } from './utils'
+import { currentVersion } from './packManager'
 
 /** 菜单里展示的应用名（打包后的 productName，不跟随 package.json 的包名） */
 const APP_NAME = 'Kiro Manager Lite'
@@ -37,7 +38,7 @@ function alert(deps: AppMenuDeps, message: string, ok = true): void {
 function aboutDetail(): string {
   const { electron, chrome, node, v8 } = process.versions
   return [
-    `版本: ${app.getVersion()}`,
+    `版本: ${currentVersion()}`,
     `Electron: ${electron}`,
     `Chromium: ${chrome}`,
     `Node.js: ${node}`,

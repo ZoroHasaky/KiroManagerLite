@@ -97,6 +97,22 @@ interface Schema {
   proxyRequireKeyDefault: boolean
   /** 写入 Kiro CLI 环境变量的记录，见 kiroCliEnv */
   kiroCliEnvBackup: KiroCliEnvBackup | null
+  /**
+   * 上次退出时的窗口位置与尺寸。
+   *
+   * 单独一个键而不是放进 settings：settings 是渲染进程整份提交的，
+   * 窗口尺寸只有主进程知道，混在一起容易被界面那次整体覆盖冲掉。
+   */
+  windowBounds: WindowBounds | null
+}
+
+/** 窗口的位置与尺寸，以及最大化状态（最大化时用普通尺寸还原） */
+export interface WindowBounds {
+  x?: number
+  y?: number
+  width: number
+  height: number
+  maximized: boolean
 }
 
 const EMPTY_DATA: AccountStoreData = { version: 1, accounts: [], activeAccountId: null }
@@ -149,7 +165,8 @@ const store = new Store<Schema>({
     proxyApiKeys: [],
     proxyPayloadDefault153600: false,
     proxyRequireKeyDefault: false,
-    kiroCliEnvBackup: null
+    kiroCliEnvBackup: null,
+    windowBounds: null
   }
 })
 
@@ -563,6 +580,29 @@ export function setSettings(settings: Partial<AppSettings>): AppSettings {
 
 export function getStorePath(): string {
   return store.path
+}
+
+// ============ 窗口状态 ============
+
+/** 上次保存的窗口位置与尺寸；没有存过或数据不可信时返回 null */
+export function getWindowBounds(): WindowBounds | null {
+  const raw = read('windowBounds') as WindowBounds | null | undefined
+  if (!raw) return null
+  const width = Number(raw.width)
+  const height = Number(raw.height)
+  // 尺寸必须是有限正数：手改过的配置或早期版本写坏的值不能直接拿去建窗口
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width < 1 || height < 1) return null
+  return {
+    x: Number.isFinite(Number(raw.x)) ? Math.round(Number(raw.x)) : undefined,
+    y: Number.isFinite(Number(raw.y)) ? Math.round(Number(raw.y)) : undefined,
+    width: Math.round(width),
+    height: Math.round(height),
+    maximized: raw.maximized === true
+  }
+}
+
+export function setWindowBounds(bounds: WindowBounds): void {
+  write('windowBounds', bounds)
 }
 
 // ============ Key 网关数据 ============

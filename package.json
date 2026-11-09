@@ -1,8 +1,8 @@
 {
   "name": "kiro-account-lite",
-  "version": "1.1.8",
+  "version": "1.1.9",
   "description": "Kiro Manager Lite - Kiro 多账号管理器轻量版",
-  "main": "./out/main/index.js",
+  "main": "./bootstrap.js",
   "author": "kiro-account-lite",
   "license": "AGPL-3.0",
   "private": true,
@@ -24,7 +24,8 @@
     "build:win": "npm run prepack:dist && electron-builder --win",
     "build:linux": "npm run prepack:dist && electron-builder --linux",
     "build:all": "npm run prepack:dist && electron-builder --mac --win --linux",
-    "build:unpack": "npm run prepack:dist && electron-builder --dir"
+    "build:unpack": "npm run prepack:dist && electron-builder --dir",
+    "pack:make": "node scripts/make-pack.mjs"
   },
   "dependencies": {
     "@electron-toolkit/utils": "4.0.0",
