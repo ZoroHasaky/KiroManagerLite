@@ -1,6 +1,6 @@
 {
   "name": "kiro-account-lite",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Kiro Manager Lite - Kiro 多账号管理器轻量版",
   "main": "./bootstrap.js",
   "author": "kiro-account-lite",

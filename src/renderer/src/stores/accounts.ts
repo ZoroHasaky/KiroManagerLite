@@ -719,6 +719,12 @@ export const useAccountsStore = defineStore('accounts', () => {
     })
     if (changed) {
       accounts.value = next
+      /*
+       * 清掉勾选：阶段是由 soldAt 推导的，标记 / 取消后这些账号都会换一个阶段。
+       * 只要当前正停在某个阶段 tab 上，它们就会从列表里消失；留着勾选会让
+       * 「已选 N 个」与批量操作指向看不见的账号。与移入回收站的处理一致。
+       */
+      selectedIds.value = selectedIds.value.filter((id) => !target.has(id))
       persist()
     }
     return changed
