@@ -19,7 +19,7 @@ import {
   type VerifyCredentialsInput
 } from '@shared/types'
 import { errorMessage, isCredentialRejected } from '@shared/errors'
-import { shouldSkipAccountUsageRefresh } from '@shared/refreshPolicy'
+import { reachedUsageLimit, shouldSkipAccountUsageRefresh } from '@shared/refreshPolicy'
 import { accountStageOf, type AccountStage } from '@shared/accountStage'
 import { DEFAULT_REGION } from '@shared/regions'
 import { runPool } from '@/utils/format'
@@ -1397,15 +1397,32 @@ export const useAccountsStore = defineStore('accounts', () => {
       scope === 'idle' ? accountStageOf(a) === 'idle' : accountStageOf(a) !== 'idle'
     )
     const runnable = byStage.filter((a) => !shouldSkipAccountUsageRefresh(a))
-    const ids = runnable.map((a) => a.id)
+    /*
+     * 用量已经超过设置阈值的账号不再自动刷新：额度见底后刷多少次都不会变多，
+     * 纯属浪费请求。手动刷新不受这条限制，用户想查随时能查。
+     */
+    const maxPercent = settingsStore.settings.usageRefreshMaxPercent
+    const notCapped = runnable.filter((a) => !reachedUsageLimit(a, maxPercent))
+    const capped = runnable.length - notCapped.length
+    const ids = notCapped.map((a) => a.id)
     const skipped = byStage.length - ids.length
-    if (!ids.length) return
     const label = scope === 'idle' ? '已闲置账号' : '常规账号'
+    // 全部被跳过时也要留下日志：账号多的时候「这轮为什么没刷」得能查得到
+    if (!ids.length) {
+      console.info(
+        `[AutoRefresh] ${label}本轮无可刷新账号：共 ${byStage.length} 个，` +
+          `其中 ${capped} 个用量已达 ${maxPercent}%，其余为封禁或凭证失效`
+      )
+      return
+    }
     const startedAt = Date.now()
     console.info(
       `[AutoRefresh] 开始刷新${label}用量：${ids.length} 个账号` +
-        (skipped ? `（跳过 ${skipped} 个封禁或凭证失效账号）` : '')
+        (skipped ? `（跳过 ${skipped} 个封禁、凭证失效或用量已达阈值账号）` : '')
     )
+    if (capped) {
+      console.info(`[AutoRefresh] 其中 ${capped} 个账号用量已达 ${maxPercent}%，本轮跳过`)
+    }
     const res = await runBatch(ids, 'check')
     // 打印耗时便于对照间隔：耗时接近或超过间隔时下一轮会紧接着开始
     console.info(

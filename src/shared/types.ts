@@ -1437,6 +1437,16 @@ export interface AppSettings {
    * 这里让它们按更长的间隔单独刷，其余账号仍按 usageRefreshInterval 走。
    */
   idleUsageRefreshInterval: number
+  /**
+   * 用量达到这个百分比后就不再自动刷新用量（0 表示不限制）。
+   *
+   * 快用完额度的号刷新频率再高也没有意义——额度不会自己变多，
+   * 而每轮刷新都要发一次真实请求。设成 95 就只保留「快见底但还没见底」
+   * 的那一小段继续跟踪，见底后停手。
+   *
+   * 到重置时间后会自动放行一次刷新，否则账号会被永久跳过。
+   */
+  usageRefreshMaxPercent: number
   /** 批量并发 */
   concurrency: number
   /** 用量接口类型 */
@@ -1529,6 +1539,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   usageRefreshInterval: 5,
   // 已闲置账号默认 12 小时刷一次：它们不再产生新消耗，没必要跟着短间隔空跑
   idleUsageRefreshInterval: 12,
+  // 0 = 关闭：默认不按用量百分比拦截，保持与旧版本一致的行为
+  usageRefreshMaxPercent: 0,
   concurrency: 5,
   usageApiType: 'rest',
   importConcurrency: 50,

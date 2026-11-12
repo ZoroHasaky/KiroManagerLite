@@ -268,6 +268,7 @@ type NumericSettingKey =
   | 'keyRefreshInterval'
   | 'usageRefreshInterval'
   | 'idleUsageRefreshInterval'
+  | 'usageRefreshMaxPercent'
   | 'apiKeyUsageRefreshInterval'
   | 'apiKeyRefreshConcurrency'
 
@@ -609,6 +610,21 @@ function resetAll(): void {
           <span class="muted">
             已闲置账号不会再产生新消耗，单独按这个间隔刷新即可
             <span class="next-refresh">{{ nextIdleUsageRefreshText }}</span>
+          </span>
+        </a-form-item>
+        <a-form-item label="用量达阈值后停刷" class="field-inline">
+          <a-input-number
+            :value="settings.usageRefreshMaxPercent"
+            :min="0"
+            :max="100"
+            :step="5"
+            addon-after="%"
+            style="width: 180px"
+            :disabled="!settings.autoRefreshUsage"
+            @change="(v: unknown) => updateNumber('usageRefreshMaxPercent', v)"
+          />
+          <span class="muted">
+            用量达到该百分比后不再自动刷新，0 表示不限制；重置时间过后会自动放行一次
           </span>
         </a-form-item>
         <a-form-item label="批量并发" class="field-inline">

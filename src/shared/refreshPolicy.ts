@@ -40,3 +40,42 @@ export function shouldSkipAccountUsageRefresh(
   if (account.status === 'banned' || account.status === 'expired') return true
   return account.status === 'error' && isPermanentFailure(account.lastError || '')
 }
+
+/**
+ * 该账号的用量是否已经达到「不再自动刷新」的阈值。
+ *
+ * 与 shouldSkipAccountUsageRefresh 的区别：那个跳的是「刷了也必然失败」的账号，
+ * 这个是主动停掉「刷了也没意义」的账号——额度已经见底，刷新只会白耗请求。
+ *
+ * 阈值 <= 0 表示不限制。额度重置之前一律停刷，但过了 nextResetDate 必须放行，
+ * 否则账号被停刷后就永远看不到「额度已重置」，会一直卡在跳过状态里。
+ */
+export function reachedUsageLimit(
+  account: Pick<Account, 'usage'>,
+  maxPercent: number,
+  now = Date.now()
+): boolean {
+  if (!Number.isFinite(maxPercent) || maxPercent <= 0) return false
+
+  const limit = account.usage?.limit ?? 0
+  // 没有额度信息时不拦：limit 为 0 时百分比无从谈起，继续刷才能拿到真实额度
+  if (limit <= 0) return false
+
+  if ((account.usage.percentUsed || 0) * 100 < maxPercent) return false
+
+  /*
+   * 到阈值了，接下来要判断「是不是已经过了重置时间、该放行一次」。
+   *
+   * nextResetDate 是可选字段：早期数据或某些接口响应里没有它。这种情况下不能
+   * 一律停刷——账号会永远卡在跳过状态，连额度重置了都不知道。退化成按最后
+   * 更新时间算：超过 24 小时没刷过就放行一次，既能止住大部分无谓请求，
+   * 又保证账号最多一天能自愈一次。
+   */
+  const resetAt = account.usage?.nextResetDate ? Date.parse(account.usage.nextResetDate) : NaN
+  if (Number.isFinite(resetAt)) return now < resetAt
+
+  const lastUpdated = account.usage?.lastUpdated ?? 0
+  const STALE_MS = 24 * 60 * 60 * 1000
+  if (!Number.isFinite(lastUpdated) || lastUpdated <= 0) return false
+  return now - lastUpdated < STALE_MS
+}
