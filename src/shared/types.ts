@@ -1455,6 +1455,14 @@ export interface AppSettings {
    * 提前量越小、每轮要刷的账号越少，批量刷新时的瞬时压力也越小。
    */
   keyRefreshWindowMinutes: number
+  /**
+   * 密钥刷新也套用「用量达阈值后停刷」的百分比。
+   *
+   * 与用量刷新不同，停刷密钥有副作用：accessToken 一小时就过期，过期后要用这个账号
+   * 就得拿 refreshToken 重新换一次，refreshToken 长期不轮换还可能被服务端判失效。
+   * 所以默认关闭，只给「额度已用完、短期不会再动」的账号建议打开。
+   */
+  skipKeyRefreshAtUsageLimit: boolean
   /** 批量并发 */
   concurrency: number
   /** 用量接口类型 */
@@ -1546,6 +1554,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   keyRefreshInterval: 5,
   // 默认 30 分钟：与 1.2.x 行为一致，老用户升级不会突然改变刷新节奏
   keyRefreshWindowMinutes: 30,
+  // 默认关闭：停刷密钥会让 token 过期，账号下次使用要重新登录
+  skipKeyRefreshAtUsageLimit: false,
   usageRefreshInterval: 5,
   // 已闲置账号默认 12 小时刷一次：它们不再产生新消耗，没必要跟着短间隔空跑
   idleUsageRefreshInterval: 12,

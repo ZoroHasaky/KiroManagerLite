@@ -646,6 +646,12 @@ function resetAll(): void {
             用量达到该百分比后不再自动刷新，0 表示不限制；重置时间过后会自动放行一次
           </span>
         </a-form-item>
+        <a-form-item label="用量达阈值后停刷密钥" class="field-inline">
+          <SettingSwitch field="skipKeyRefreshAtUsageLimit" />
+          <span class="muted">
+            用上面的百分比一起拦截密钥刷新。停刷后 token 会过期，再次使用该账号需要重新登录
+          </span>
+        </a-form-item>
         <a-form-item label="批量并发" class="field-inline">
           <a-input-number
             :value="settings.concurrency"

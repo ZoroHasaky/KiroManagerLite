@@ -1394,18 +1394,37 @@ export const useAccountsStore = defineStore('accounts', () => {
       settingsStore.settings.keyRefreshWindowMinutes || DEFAULT_KEY_REFRESH_WINDOW_MINUTES
     )
     const windowMs = windowMinutes * 60_000
-    const soon = accounts.value
-      .filter(
-        (a) =>
-          a.status !== 'banned' &&
-          !(renewalOn && a.isActive) &&
-          // 提前量越大，每轮进队列的账号越多；批量刷新时这直接决定瞬时并发压力
-          a.credentials.expiresAt - Date.now() < windowMs
-      )
+    /*
+     * 可选的用量阈值拦截。默认关闭，因为停刷密钥是有代价的：
+     * accessToken 过期后要重新换一次，refreshToken 长期不轮换也可能被判失效。
+     * 打开后只对「额度已用完、短期不会再动」的账号生效，能省下大量无谓轮换。
+     */
+    const capEnabled = settingsStore.settings.skipKeyRefreshAtUsageLimit
+    const maxPercent = settingsStore.settings.usageRefreshMaxPercent
+    const useCap = capEnabled && Number.isFinite(maxPercent) && maxPercent > 0
+
+    const expiring = accounts.value.filter(
+      (a) =>
+        a.status !== 'banned' &&
+        !(renewalOn && a.isActive) &&
+        // 提前量越大，每轮进队列的账号越多；批量刷新时这直接决定瞬时并发压力
+        a.credentials.expiresAt - Date.now() < windowMs
+    )
+    const soon = expiring
+      .filter((a) => !useCap || !reachedUsageLimit(a, maxPercent))
       .map((a) => a.id)
+    const capped = expiring.length - soon.length
+
     if (!soon.length) {
-      console.info('[AutoRefresh] 本轮没有即将过期的账号，跳过密钥刷新')
+      console.info(
+        capped
+          ? `[AutoRefresh] 本轮没有需要刷新的密钥：${capped} 个账号用量已达 ${maxPercent}%，已按设置跳过`
+          : '[AutoRefresh] 本轮没有即将过期的账号，跳过密钥刷新'
+      )
       return
+    }
+    if (capped) {
+      console.info(`[AutoRefresh] 其中 ${capped} 个账号用量已达 ${maxPercent}%，本轮跳过密钥刷新`)
     }
     const res = await runBatch(soon, 'refresh')
     if (res.success) message.success(`自动刷新密钥完成：成功 ${res.success}，失败 ${res.failed}`)
