@@ -142,8 +142,15 @@ function throttledShallowRef<T>(initial: T, wait: number): Ref<T> {
 
 /** 统计里「即将重置」的天数阈值 */
 const EXPIRING_SOON_DAYS = 7
-/** 自动刷新密钥只处理这个时间窗内即将过期的账号 */
-const AUTO_REFRESH_WINDOW_MS = 30 * 60_000
+/** 自动刷新密钥的默认时间窗（分钟）；实际取值来自设置，这里只是兜底 */
+const DEFAULT_KEY_REFRESH_WINDOW_MINUTES = 30
+/**
+ * 走代理时批量刷新的并发上限。
+ *
+ * 本地代理对并发隧道数量的容忍度低，超过就容易整批被重置（表现为 fetch failed）。
+ * 3 条已经足够跑满千兆带宽下的 JSON 小请求，再多收益很低、失败率却明显上升。
+ */
+const PROXY_CONCURRENCY_CAP = 3
 /** 接口没给 expiresIn 时的兜底有效期（秒） */
 const DEFAULT_EXPIRES_IN = 3600
 
@@ -1166,12 +1173,24 @@ export const useAccountsStore = defineStore('accounts', () => {
       done: 0
     }
 
+    /*
+     * 走代理时把并发压得更低。
+     *
+     * 本地代理（Clash / v2ray 之类）对并发连接的承载远不如直连，批量刷新几百个账号时
+     * 连着开十几个 CONNECT 隧道，代理会直接重置连接，undici 统一报成 fetch failed。
+     * 这正是「换节点后再刷新就成功」的原因：不是账号有问题，是同一时刻的隧道太多。
+     * 直连时仍用用户设置的并发数，不牺牲速度。
+     */
+    const configured = settingsStore.settings.concurrency
+    const usingProxy = settingsStore.settings.proxyEnabled && !!settingsStore.settings.proxyUrl.trim()
+    const concurrency = usingProxy ? Math.min(configured, PROXY_CONCURRENCY_CAP) : configured
+
     // running 必须在 finally 里复位：池子里任何一个任务抛异常都会让整个 runPool reject，
     // 一旦这里漏掉复位，task.running 会永久为 true，之后所有自动刷新都会被静默跳过
     try {
       await runPool(
         ids,
-        settingsStore.settings.concurrency,
+        concurrency,
         async (id) => {
           // 单个账号的异常必须就地兜住：抛出去会中断所在的并发通道，
           // 该通道排队中的账号会被整批丢掉，表现为「一批里有些账号没刷新」
@@ -1358,7 +1377,7 @@ export const useAccountsStore = defineStore('accounts', () => {
     Math.max(1, settingsStore.settings.idleUsageRefreshInterval) * 3_600_000
 
   /**
-   * 只处理即将过期的账号（剩余有效期 < AUTO_REFRESH_WINDOW_MS）。
+   * 只处理即将过期的账号（剩余有效期 < keyRefreshWindowMinutes）。
    *
    * refreshToken 是轮换式的，刷一次旧值立即作废，所以刷得越勤、轮换失败与限流的
    * 面就越大，而 token 本身有 1 小时寿命，没必要每轮都换。
@@ -1370,12 +1389,18 @@ export const useAccountsStore = defineStore('accounts', () => {
    */
   async function refreshExpiringKeys(): Promise<void> {
     const renewalOn = settingsStore.settings.proactiveRenewalEnabled
+    const windowMinutes = Math.max(
+      1,
+      settingsStore.settings.keyRefreshWindowMinutes || DEFAULT_KEY_REFRESH_WINDOW_MINUTES
+    )
+    const windowMs = windowMinutes * 60_000
     const soon = accounts.value
       .filter(
         (a) =>
           a.status !== 'banned' &&
           !(renewalOn && a.isActive) &&
-          a.credentials.expiresAt - Date.now() < AUTO_REFRESH_WINDOW_MS
+          // 提前量越大，每轮进队列的账号越多；批量刷新时这直接决定瞬时并发压力
+          a.credentials.expiresAt - Date.now() < windowMs
       )
       .map((a) => a.id)
     if (!soon.length) {

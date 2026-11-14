@@ -46,6 +46,9 @@ import { formatCheckedAt } from '@/utils/format'
 import { now } from '@/utils/now'
 import { bodyPopupContainer, confirmDanger } from '@/utils/ui'
 
+/** 与 accounts store 里的 PROXY_CONCURRENCY_CAP 保持一致，仅用于提示文案 */
+const PROXY_CONCURRENCY_CAP = 3
+
 const settingsStore = useSettingsStore()
 const accountsStore = useAccountsStore()
 const keysStore = useKeysStore()
@@ -269,6 +272,7 @@ type NumericSettingKey =
   | 'usageRefreshInterval'
   | 'idleUsageRefreshInterval'
   | 'usageRefreshMaxPercent'
+  | 'keyRefreshWindowMinutes'
   | 'apiKeyUsageRefreshInterval'
   | 'apiKeyRefreshConcurrency'
 
@@ -564,6 +568,21 @@ function resetAll(): void {
             按下面的用量刷新间隔与批量并发，定期拉取账号的积分用量与订阅信息
           </span>
         </a-form-item>
+        <a-form-item label="密钥过期提前量" class="field-inline">
+          <a-input-number
+            :value="settings.keyRefreshWindowMinutes"
+            :min="1"
+            :max="180"
+            :step="5"
+            addon-after="分钟"
+            style="width: 180px"
+            :disabled="!settings.autoRefresh"
+            @change="(v: unknown) => updateNumber('keyRefreshWindowMinutes', v)"
+          />
+          <span class="muted">
+            只刷新剩余有效期小于这个值的账号，提前量越小每轮要刷的账号越少
+          </span>
+        </a-form-item>
         <a-form-item label="密钥刷新间隔" class="field-inline">
           <a-input-number
             :value="settings.keyRefreshInterval"
@@ -635,7 +654,10 @@ function resetAll(): void {
             style="width: 180px"
             @change="(v: unknown) => update({ concurrency: Number(v) || 5 })"
           />
-          <span class="muted">并发过高容易被限流</span>
+          <span class="muted">
+            并发过高容易被限流；开启代理时实际并发不超过
+            {{ PROXY_CONCURRENCY_CAP }}（本地代理扛不住太多并发隧道）
+          </span>
         </a-form-item>
         <a-form-item label="删除前确认">
           <SettingSwitch field="confirmBeforeDelete" />

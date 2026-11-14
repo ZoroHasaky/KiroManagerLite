@@ -1447,6 +1447,14 @@ export interface AppSettings {
    * 到重置时间后会自动放行一次刷新，否则账号会被永久跳过。
    */
   usageRefreshMaxPercent: number
+  /**
+   * 密钥刷新只处理「这么多分钟内即将过期」的账号。
+   *
+   * refreshToken 是轮换式的，刷得越勤、旧值被作废的机会越多，取消订阅时越容易踩到
+   * invalid_grant；而 accessToken 本身寿命 1 小时，提前量太大也没有意义。
+   * 提前量越小、每轮要刷的账号越少，批量刷新时的瞬时压力也越小。
+   */
+  keyRefreshWindowMinutes: number
   /** 批量并发 */
   concurrency: number
   /** 用量接口类型 */
@@ -1536,6 +1544,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoRefresh: true,
   autoRefreshUsage: true,
   keyRefreshInterval: 5,
+  // 默认 30 分钟：与 1.2.x 行为一致，老用户升级不会突然改变刷新节奏
+  keyRefreshWindowMinutes: 30,
   usageRefreshInterval: 5,
   // 已闲置账号默认 12 小时刷一次：它们不再产生新消耗，没必要跟着短间隔空跑
   idleUsageRefreshInterval: 12,
