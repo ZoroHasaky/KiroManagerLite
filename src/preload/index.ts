@@ -38,15 +38,6 @@ const api = {
   saveAccounts: (data: unknown) => invoke('accounts:save', data),
   deleteAccounts: (ids: string[]) => invoke('accounts:delete', ids),
 
-  /** 用账号凭证向 Kiro 控制面申请一个新的 API Key */
-  createAccountApiKey: (account: unknown, label: string) =>
-    invoke('accounts:create-api-key', account, label),
-  /** 列出该账号已创建的 API Key（只有前缀，没有完整明文） */
-  listAccountApiKeys: (account: unknown) => invoke('accounts:list-api-keys', account),
-
-  /** 删除该账号的一个 API Key */
-  deleteAccountApiKey: (account: unknown, keyId: string) =>
-    invoke('accounts:delete-api-key', account, keyId),
   /** 用该账号凭证在系统 Chrome 的无痕窗口打开 Kiro 官网后台 */
   openAccountPortal: (account: unknown) => invoke('accounts:open-portal', account),
 
@@ -81,36 +72,6 @@ const api = {
   switchSubscriptionToFree: (account: unknown) =>
     invoke('subscription:switch-to-free', account),
 
-  // Kiro API Key 管理 / 本地网关
-  loadKeys: () => invoke('keys:load'),
-  addKey: (key: string, note?: string, region?: string) =>
-    invoke('keys:add', key, note, region),
-  importKeys: (text: string, region?: string) => invoke('keys:import', text, region),
-  updateKey: (id: string, note: string) => invoke('keys:update', id, note),
-  setKeysNote: (ids: string[], note: string) => invoke('keys:set-note', ids, note),
-  setKeyGroups: (groups: unknown) => invoke('keys:set-groups', groups),
-  setKeysGroup: (ids: string[], groupIds: string[]) => invoke('keys:set-group', ids, groupIds),
-  setKeysTrashed: (ids: string[], trashed: boolean) => invoke('keys:set-trashed', ids, trashed),
-  setKeyRegion: (id: string, region: string) => invoke('keys:set-region', id, region),
-  deleteKey: (id: string) => invoke('keys:delete', id),
-  selectKey: (id: string | null) => invoke('keys:select', id),
-  testKey: (id: string) => invoke('keys:test', id),
-  listKeyModels: (id: string) => invoke('keys:models', id),
-  syncKey: (id: string) => invoke('keys:sync', id),
-  syncAllKeys: (concurrency?: number) => invoke('keys:sync-all', concurrency),
-  getKeyGatewayStatus: () => invoke('key-gateway:status'),
-  getKiroCapability: () => invoke('key-gateway:capability'),
-  getKeyGatewayStats: () => invoke('key-gateway:stats'),
-  resetKeyGatewayStats: (keyId?: string) => invoke('key-gateway:stats-reset', keyId),
-  getKeyGatewayHistory: (keyId: string) => invoke('key-gateway:history', keyId),
-  inspectKeyGatewayConflict: () => invoke('key-gateway:inspect-conflict'),
-  enableKeyGateway: (keyId?: string, force?: boolean) =>
-    invoke('key-gateway:enable', keyId, force),
-  disableKeyGateway: () => invoke('key-gateway:disable'),
-  configureKeyGateway: (input: unknown) => invoke('key-gateway:configure', input),
-  onKeyGatewayChanged: (handler: (payload: unknown) => void) =>
-    subscribe('key-gateway:changed', handler),
-
   // 账号操作
   verifyCredentials: (input: unknown) => invoke('accounts:verify', input),
   refreshAccountToken: (account: unknown) => invoke('accounts:refresh-token', account),
@@ -123,12 +84,8 @@ const api = {
     invoke('usage:record', accountId, usage),
   clearUsageHistory: (accountId: string) => invoke('usage:clear-history', accountId),
 
-  // Kiro IDE
+  // 读取本机已登录的 Kiro 凭证，供添加账号时预填（只读）
   readLocalKiroCredentials: () => invoke('kiro:read-local-credentials'),
-  getActiveKiroToken: () => invoke('kiro:get-active-token'),
-  switchAccount: (input: unknown) => invoke('kiro:switch', input),
-  restartKiroIde: () => invoke('kiro:restart-ide'),
-  logoutKiro: () => invoke('kiro:logout'),
 
   // 账号测活
   listKiroModels: (input: unknown) => invoke('kiro:list-models', input),
@@ -136,10 +93,6 @@ const api = {
   cancelChatTest: (requestId: string) => invoke('kiro:chat-cancel', requestId),
   onChatChunk: (handler: (payload: { requestId: string; delta: string }) => void) =>
     subscribe('kiro:chat-chunk', handler),
-  keyChatTest: (requestId: string, input: unknown) => invoke('keys:chat-test', requestId, input),
-  cancelKeyChatTest: (requestId: string) => invoke('keys:chat-cancel', requestId),
-  onKeyChatChunk: (handler: (payload: { requestId: string; delta: string }) => void) =>
-    subscribe('keys:chat-chunk', handler),
 
   // 在线登录
   startBuilderIdLogin: (region?: string, privateMode?: boolean) =>
@@ -189,59 +142,9 @@ const api = {
   onPackProgress: (handler: (payload: unknown) => void) =>
     subscribe('update:pack-progress', handler),
 
-  // 常用工具：Kiro Agent 权限
-  getShellAutoApproveStatus: () => invoke('tools:shell-approve-status'),
-  enableShellAutoApprove: () => invoke('tools:shell-approve-enable'),
-  disableShellAutoApprove: () => invoke('tools:shell-approve-disable'),
-  revealShellApproveTarget: (kind: 'trustedCommands' | 'permissionsYaml') =>
-    invoke('tools:shell-approve-reveal', kind),
-
-  // 常用工具：机器码
-  getMachineIdStatus: () => invoke('tools:machine-id-status'),
-  resetMachineId: () => invoke('tools:machine-id-reset'),
-  restoreMachineId: () => invoke('tools:machine-id-restore'),
-  revealMachineIdLocation: (field: string) => invoke('tools:machine-id-reveal', field),
-  revealSsoCacheFile: (target: string) => invoke('accounts:reveal-sso-file', target),
-
   // 常用工具：网络检测
   getIpInfo: () => invoke('tools:ip-info'),
   testSite: (id: string) => invoke('tools:site-test', id),
-
-  // 本地反代
-  getProxyState: () => invoke('proxy:state'),
-  saveProxyConfig: (patch: unknown) => invoke('proxy:save-config', patch),
-  startProxy: () => invoke('proxy:start'),
-  stopProxy: () => invoke('proxy:stop'),
-  clearProxyLogs: () => invoke('proxy:clear-logs'),
-  resetProxyStats: () => invoke('proxy:reset-stats'),
-  listProxyKeys: () => invoke('proxy:keys'),
-  createProxyKey: (input: unknown) => invoke('proxy:key-create', input),
-  updateProxyKey: (id: string, patch: unknown) => invoke('proxy:key-update', id, patch),
-  deleteProxyKey: (id: string) => invoke('proxy:key-delete', id),
-  setDefaultProxyKey: (id: string) => invoke('proxy:key-set-default', id),
-  getProxyKeyUsage: (id: string) => invoke('proxy:key-usage', id),
-  resetProxyKeyUsage: (id: string) => invoke('proxy:key-reset-usage', id),
-  regenerateProxyDefaultKey: () => invoke('proxy:regenerate-default-key'),
-  tryProxyEndpoint: (input: unknown) => invoke('proxy:try-endpoint', input),
-  getProxyClientStates: (fresh?: boolean) => invoke('proxy:client-states', fresh),
-  refreshProxyModels: () => invoke('proxy:refresh-models'),
-  applyProxyClient: (target: string) => invoke('proxy:client-apply', target),
-  restoreProxyClient: (target: string) => invoke('proxy:client-restore', target),
-  revealProxyClientFile: (target: string, index: number) =>
-    invoke('proxy:client-reveal', target, index),
-  openProxyClient: (target: string) => invoke('proxy:client-open', target),
-  pickProxyClientPath: (target: string) => invoke('proxy:client-pick-path', target),
-  clearProxyClientPath: (target: string) => invoke('proxy:client-clear-path', target),
-  getKiroCliEnv: () => invoke('kiroCli:env-status'),
-  writeKiroCliEnv: (key: string) => invoke('kiroCli:env-write', key),
-  removeKiroCliEnv: () => invoke('kiroCli:env-remove'),
-  /** 写入客户端配置时的进度（Cursor 首次要装 CCursor） */
-  onProxyClientProgress: (cb: (payload: unknown) => void) =>
-    subscribe('proxy:client-progress', cb),
-  /** 反代状态变化（启停、统计） */
-  onProxyStatus: (cb: (status: unknown) => void) => subscribe('proxy:status', cb),
-  /** 反代请求日志新增或更新；payload 为 null 表示日志已清空 */
-  onProxyLog: (cb: (entry: unknown) => void) => subscribe('proxy:log', cb),
 
   // 系统日志
   queryLogs: (query: unknown) => invoke('log:query', query),
@@ -268,10 +171,6 @@ const api = {
 
   // kiro-manager-lite:// 协议唤起时的路由跳转
   onAppNavigate: (handler: (target: string) => void) => subscribe('app:navigate', handler),
-
-  // 主进程主动续期成功后回传新凭证，渲染进程据此同步内存
-  onProactiveRenewal: (handler: (payload: unknown) => void) =>
-    subscribe('proactive-renewal:done', handler),
 
   // 托盘「退出程序」触发的退出确认
   quitApp: () => invoke('app:quit'),

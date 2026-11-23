@@ -184,7 +184,7 @@ async function start(): Promise<void> {
   requestId.value = `${account.id}-${Date.now()}`
 
   try {
-    // 任意账号都能测：token 过期就先续一次，不影响 IDE 当前登录的账号
+    // 任意账号都能测：token 过期就先续一次
     const accessToken = await ensureAccessToken(account.id)
     const res = await window.api.chatTest(requestId.value, {
       accountId: account.id,

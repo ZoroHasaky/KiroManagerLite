@@ -3,7 +3,7 @@
  * 常用备注条：设置备注弹窗里、输入框上方那一排短语。
  *
  * 点一条就把它填进输入框；右边「存为常用」收下输入框当前内容，方便边写边攒。
- * 常用备注存在设置里（settings.notePresets），账号与 API Key 共用同一份，
+ * 常用备注存在设置里（settings.notePresets），
  * 所以这个组件直接读设置 store，调用方只需要把输入框的当前值传进来。
  */
 import { computed } from 'vue'

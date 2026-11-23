@@ -33,15 +33,12 @@ import ImportAccountsModal from '@/components/accounts/ImportAccountsModal.vue'
 import ExportAccountsModal from '@/components/accounts/ExportAccountsModal.vue'
 import EditAccountModal from '@/components/accounts/EditAccountModal.vue'
 import BatchNoteModal from '@/components/common/BatchNoteModal.vue'
-import BatchCreateApiKeyModal from '@/components/accounts/BatchCreateApiKeyModal.vue'
 import { useRangeSelect } from '@/utils/rangeSelect'
 import AccountInfoModal from '@/components/accounts/AccountInfoModal.vue'
 import AccountTestModal from '@/components/accounts/AccountTestModal.vue'
-import CreateApiKeyModal from '@/components/accounts/CreateApiKeyModal.vue'
 import UsageHistoryModal from '@/components/accounts/UsageHistoryModal.vue'
 import SubscriptionModal from '@/components/accounts/SubscriptionModal.vue'
 import PayInAppModal from '@/components/accounts/PayInAppModal.vue'
-import SwitchResultModal from '@/components/accounts/SwitchResultModal.vue'
 import { useAccountsStore } from '@/stores/accounts'
 import { useSettingsStore } from '@/stores/settings'
 import { displayEmail as maskedEmail } from '@/utils/display'
@@ -57,7 +54,7 @@ import {
 } from '@/utils/ui'
 import { ACCOUNT_STAGE_META, ACCOUNT_STAGES, type AccountStage } from '@shared/accountStage'
 import { isTrashed } from '@shared/itemGroups'
-import type { Account, AccountDisplayMode, SwitchAccountResult } from '@shared/types'
+import type { Account, AccountDisplayMode } from '@shared/types'
 
 const accountsStore = useAccountsStore()
 const settingsStore = useSettingsStore()
@@ -78,7 +75,6 @@ function openImport(): void {
 }
 const exportOpen = ref(false)
 const batchNoteOpen = ref(false)
-const batchApiKeyOpen = ref(false)
 
 const router = useRouter()
 
@@ -104,7 +100,6 @@ const batchTargets = computed(() => {
 const editTarget = ref<Account | null>(null)
 const infoTarget = ref<Account | null>(null)
 const testTarget = ref<Account | null>(null)
-const apiKeyTarget = ref<Account | null>(null)
 const usageTarget = ref<Account | null>(null)
 /** 每个账号当前进行中的操作 key，用于只给被点的按钮加载态 */
 const rowBusy = ref<Record<string, string | undefined>>({})
@@ -277,13 +272,10 @@ const gridLayout = computed(() => {
 /**
  * 列表顺序：添加时间降序（新的在前）。
  *
- * 排序菜单已从工具栏移除，排序方式固定成这一种。IDE 当前账号始终置顶，
- * 不管它是什么时候加的——用户第一眼要看到的就是正在用的那个号。
+ * 排序菜单已从工具栏移除，排序方式固定成这一种：按加入时间，最新的在最前面。
  */
 const sorted = computed(() =>
-  [...accountsStore.filtered].sort(
-    (a, b) => Number(b.isActive) - Number(a.isActive) || (b.createdAt || 0) - (a.createdAt || 0)
-  )
+  [...accountsStore.filtered].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
 )
 
 /** 网格数据：账号卡片 + 末尾一张「添加账号」卡 */
@@ -392,10 +384,7 @@ async function withBusy(id: string, action: string, fn: () => Promise<void>): Pr
 async function refreshKey(account: Account): Promise<void> {
   await withBusy(account.id, 'refresh-key', async () => {
     const res = await accountsStore.refreshToken(account.id)
-    notifyResult(res, {
-      success: res.syncedToIde ? '密钥已刷新并同步到 Kiro IDE' : '密钥已刷新',
-      failPrefix: '刷新密钥失败'
-    })
+    notifyResult(res, { success: '密钥已刷新', failPrefix: '刷新密钥失败' })
   })
 }
 
@@ -457,25 +446,6 @@ function copyToken(account: Account): void {
     groups: accountsStore.groups
   })
   copyText(content, '凭证 JSON 已复制到剪贴板')
-}
-
-const switchResult = ref<SwitchAccountResult | null>(null)
-const switchLabel = ref('')
-const switchModalOpen = ref(false)
-
-async function switchTo(account: Account): Promise<void> {
-  await withBusy(account.id, 'switch', async () => {
-    const res = await accountsStore.switchTo(account.id)
-    if (!res.ok || !res.result) return void message.error(`切换失败：${res.error}`)
-    switchResult.value = res.result
-    // 打码模式下昵称同样要遮住，只显示打码邮箱
-    switchLabel.value = privacyMode.value
-      ? displayEmail(account.email)
-      : account.nickname
-        ? `${account.nickname}（${account.email}）`
-        : account.email
-    switchModalOpen.value = true
-  })
 }
 
 function clearDeletedAccountUi(ids: string[]): void {
@@ -566,7 +536,6 @@ function toggleTrashView(): void {
 
 const normalMenu: ContextMenuItem[] = [
   { key: 'note', label: '设置备注', icon: EditOutlined },
-  { key: 'apikey', label: '生成 API Key', icon: KeyOutlined },
   { key: 'subscription', label: '获取订阅链接', icon: CrownOutlined },
   { key: 'sold', label: '标记为已出售', icon: TagOutlined },
   { key: 'unsold', label: '取消已出售', icon: TagOutlined },
@@ -600,17 +569,15 @@ const cardHandlers = {
 }
 
 /**
- * 信息弹窗里点「测活 / API Key 管理」：先关信息弹窗，再开目标弹窗。
+ * 信息弹窗里点「测活」：先关信息弹窗，再开测活弹窗。
  *
- * 不叠着开是因为两层 antd 弹窗的 z-index 各自自增，而 CreateApiKeyModal
- * 内部还有写死层级的明文弹窗与添加弹窗，叠起来会压错层。
+ * 不叠着开是因为两层 antd 弹窗的 z-index 各自自增，叠起来会压错层。
  * nextTick 等蒙层卸载后再挂载，避免两个弹窗的滚动锁互相顶掉。
  */
-function fromInfo(kind: 'test' | 'create-api-key', account: Account): void {
+function fromInfo(kind: 'test', account: Account): void {
   infoTarget.value = null
   void nextTick(() => {
     if (kind === 'test') testTarget.value = account
-    else apiKeyTarget.value = account
   })
 }
 
@@ -632,7 +599,6 @@ function onContextMenu(key: string): void {
   // 多项时勾选集合就是这批目标（见 useCardContextMenu），直接复用各个批量入口
   const multi = ids.length > 1
   if (key === 'note') multi ? (batchNoteOpen.value = true) : (noteTarget.value = account)
-  else if (key === 'apikey') multi ? (batchApiKeyOpen.value = true) : (apiKeyTarget.value = account)
   else if (key === 'subscription') {
     // 批量生成订阅链接在「订阅管理」页面统一做，这里多选时直接跳过去
     multi ? goSubscription() : (subscriptionTarget.value = account)
@@ -711,26 +677,6 @@ async function batch(kind: 'refresh' | 'check'): Promise<void> {
   }
 }
 
-/**
- * 退出 IDE 登录。入口只在账号卡片上，因此 account 必传。
- * 实际动作与账号无关（清空整个 sso cache 目录），account 只用于弹窗标题和行级加载态。
- */
-function logoutIde(account: Account): void {
-  confirmDanger({
-    title: `退出 ${displayEmail(account.email)} 的登录`,
-    content: '会清空 ~/.aws/sso/cache 目录下的凭证文件，IDE 需要重新登录或重新切号。',
-    okText: '继续',
-    onOk: async () => {
-      setBusy(account.id, 'logout')
-      try {
-        const res = await accountsStore.logoutIde()
-        notifyResult(res, { success: `已清理 ${res.deleted} 个凭证文件` })
-      } finally {
-        setBusy(account.id, undefined)
-      }
-    }
-  })
-}
 </script>
 
 <template>
@@ -925,10 +871,6 @@ function logoutIde(account: Account): void {
                 <DisconnectOutlined />
                 移除支付链接
               </a-menu-item>
-              <a-menu-item key="apikey" @click="batchApiKeyOpen = true">
-                <KeyOutlined />
-                批量生成 API Key
-              </a-menu-item>
               <!-- 批量生成订阅链接已独立成「订阅管理」页面，这里只负责跳过去 -->
               <a-menu-item key="subscription" @click="goSubscription">
                 <CrownOutlined />
@@ -1002,8 +944,6 @@ function logoutIde(account: Account): void {
           @pay="cardHandlers.pay"
           @edit="cardHandlers.edit"
           @remove="removeOne"
-          @switch="switchTo"
-          @logout="logoutIde"
           @refresh-key="refreshKey"
           @refresh-usage="refreshUsage"
           @copy-token="copyToken"
@@ -1063,24 +1003,13 @@ function logoutIde(account: Account): void {
       @submit="applyBatchNote"
       @close="closeNote"
     />
-    <BatchCreateApiKeyModal
-      v-if="batchApiKeyOpen"
-      :accounts="batchTargets"
-      @close="batchApiKeyOpen = false"
-    />
     <AccountInfoModal
       v-if="infoTarget"
       :account="infoTarget"
       @test="fromInfo('test', $event)"
-      @create-api-key="fromInfo('create-api-key', $event)"
       @close="infoTarget = null"
     />
     <AccountTestModal v-if="testTarget" :account="testTarget" @close="testTarget = null" />
-    <CreateApiKeyModal
-      v-if="apiKeyTarget"
-      :account="apiKeyTarget"
-      @close="apiKeyTarget = null"
-    />
     <UsageHistoryModal
       v-if="usageTarget"
       :account="usageTarget"
@@ -1095,12 +1024,6 @@ function logoutIde(account: Account): void {
       v-if="payTarget"
       :account="payTarget"
       @close="payTarget = null"
-    />
-    <SwitchResultModal
-      v-if="switchModalOpen && switchResult"
-      v-model:open="switchModalOpen"
-      :account-label="switchLabel"
-      :result="switchResult"
     />
   </div>
 </template>

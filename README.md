@@ -5,15 +5,15 @@
 <h1 align="center">Kiro Manager Lite</h1>
 
 <p align="center">
-  <strong>Kiro 多账号与 API Key 管理器轻量版</strong>
+  <strong>Kiro 多账号管理器轻量版</strong>
 </p>
 
 <p align="center">
-  多账号一键切换 · 本地反代与客户端一键接入 · 自定义分组与三种展示形态 · 订阅开通与账单管理 · 账号 API Key 管理 · 本地网关与真实调用统计 · 机器码重置与网络检测 · 自动刷新与流式测活 · 内置私密浏览器 · 托盘常驻
+  多账号集中管理 · 账号阶段自动推导 · 密钥与用量分批刷新 · 订阅开通与账单管理 · 支付链接与二维码 · 流式测活 · 导入导出 · 内置私密浏览器 · 托盘常驻
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.2.5-6c5ce7" alt="version">
+  <img src="https://img.shields.io/badge/version-1.2.6-6c5ce7" alt="version">
   <img src="https://img.shields.io/badge/updated-2026--11--23-2f9e44" alt="updated">
   <img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="license">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="platform">
@@ -36,19 +36,14 @@
 - 三种展示形态可切换并记住选择：卡片、卡片紧凑（收起额度明细）、列表（一排一个的横向长条，一屏能看几十个）
 - 详情抽屉展开订阅档位、积分构成、超额费率、Token 有效期与完整凭证，支持一键复制
 
-**换号与保活**
+**刷新与检测**
 
-- 一键把账号凭证写入 Kiro IDE 切换当前登录身份，可选切号后自动重启 IDE
-- 切号前会逐个实测 `profileArn` 候选再落盘 —— 写错这个字段是 IDE 报「Invalid token」的主因
-- 批量刷新 Token / 用量与积分，支持定时自动刷新；「主动续期」会在 IDE 当前账号的 Token 剩约 15 分钟时抢先续期并写盘，避免 IDE 自己刷新时撞车被登出
+- 批量刷新 Token / 用量与积分，支持定时自动检测
+- 检测与刷新分成两条时间线：定时任务只判断「谁该刷」并把账号放进待刷新池，另一个任务按固定节奏从池里取几个真正去刷。
+  同一出口 IP 短时间集中请求会被上游限流，把请求摊开是最直接的规避手段；密钥池与用量池各有独立的间隔与每批数量
+- 账号阶段（未使用 / 待支付 / 已订阅 / 已出售 / 已闲置）由订阅、支付链接与用量自动推导，不需要手工维护
 - 真实流式对话测活（卡片「信息」弹窗里的「测活」按钮）：实时看输出、随时中止。只有 runtime 面的真实对话才能暴露封禁账号；响应区可「查看完整响应」，列出发给官方的每次请求与原始返回（成功、失败、中止都能看）
 - 测活的模型改为可搜索的级联选择，二级是该模型自己的推理档位（Claude 系 low / medium / high / xhigh / max，GPT 系另有 none，没有这一层的模型不显示二级）；只选主模型时自动补上它的默认档位
-
-**账号 API Key**
-
-- 卡片「信息」弹窗里的「API Key 管理」直接用该账号凭证向 Kiro 控制面申请 Key，并列出它已创建的全部 Key（名称、前缀、创建时间）
-- 完整明文上游只在创建时返回一次，因此生成后单独弹窗展示，可复制或一键添加到 API Key 管理；关闭后列表里只剩前缀
-- 批量生成：勾选多个账号后在「批量操作」里为每个账号各生成一个 Key，按顺序逐个执行、单个失败不影响后续，可中止与重试失败项；生成后可复制全部或通过批量导入添加到 API Key 管理
 
 **订阅管理**
 
@@ -77,84 +72,25 @@
 - 链接是短时效凭证，每次点击都重新换取，不缓存；账号未订阅或已是 Free 时按「没有可管理的订阅」提示
 - 这条入口只负责打开门户，不替代「切换 Free」——后者仍是纯 HTTP 直接改订阅，不启浏览器
 
-### 🔑 API Key 管理
-
-- 支持单个添加、批量导入、搜索、订阅 / 状态 / 用量 / 重置时间 / 导入时间范围筛选、排序、导出和批量删除
-- 与账号列表同一套自定义分组：新建 / 改名 / 删除、长按拖动排序、按分组多选筛选、批量设置分组，卡片上显示分组标签
-- 同样有卡片、卡片紧凑、列表三种展示形态可切换并记住选择
-- 每个 Key 独立绑定区域，展示订阅档位、注册邮箱、User ID、额度、重置时间和异常原因
-- 支持单个与批量刷新、真实对话测活、批量测活；测活的模型同样是可搜索的级联选择，能选推理档位并显示消耗倍率
-- 大量 Key 使用虚拟网格渲染；详情、历史、测活和导入导出弹窗均按需挂载，减少首屏开销
-
-### 🌐 本地网关与调用统计
-
-- 本地 KRS / CPS 网关可将 Kiro IDE 请求接管到指定 API Key，支持运行中即时切换 Key
-- 自动探测当前 Kiro 版本是否真正支持自定义网关端点，并监视配置被 IDE 回写后的自动恢复
-- 按真实请求统计请求数、成功率、RPM 和服务端权威积分消耗，辅助请求与对话请求分开计数
-- 网关调用历史按分钟聚合并持久化，可查看请求数 / 成功率 / 积分曲线、明细和汇总数据
-- 可选「网关错误自动续接」，按状态码、次数和固定间隔重试可恢复错误，不掩盖额度耗尽问题
-
-### 🔁 本地反代
-
-把账号池转成标准的大模型接口，Claude Code、Codex、Cursor、VS Code 等客户端直接当作自己的模型服务来用。
-
-12 个客户端的接入效果见 **[一键接入实测截图](docs/proxy-clients.md)**。
-
-**接口与协议**
-
-- 兼容 OpenAI（`/v1/chat/completions`、`/v1/responses`、`/v1/models`）、Anthropic（`/v1/messages`、`/v1/messages/count_tokens`）与 Gemini（`/v1beta/models/*:generateContent`），另有 `/health` 与 `/admin/*` 运维接口
-- 流式输出、工具调用、图片输入与推理档位完整转换；客户端点名的模型自动映射，带日期或短横的写法也认
-- 「API 端点」弹窗列出全部接口，可在线请求、查看格式化响应并复制原文或请求示例
-- 默认只监听 `127.0.0.1`，可改端口或开放给局域网；默认强制校验 API Key
-
-**账号调度**
-
-- 账号来源二选一：账号管理里的 OAuth 账号，或 API Key 管理里的 Kiro API Key（`ksk_`）
-- 使用策略：轮询全部、指定分组（显示成员数，分组成员变化实时生效）、指定账号（可多选），选中范围内按请求轮询
-- 自动重试可开关：同一个号按间隔重试 x 次，仍失败静默换下一个号继续；额度耗尽、被封、凭证失效的号直接跳过；已开始输出后绝不重发
-- 上游端点可选自动 / CodeWhisperer / Amazon Q；请求体超限时先截断最旧的长消息，再整条丢弃最旧历史
-
-**工具与模型**
-
-- 模型列表从当前选中的号实时拉取，带上下文与输出上限、推理档位与消耗倍率
-- 工具执行模式：由反代调用 Kiro 自带的联网搜索并把结果交回模型，不依赖任何第三方搜索服务；搜索结果在后续轮次自动补回历史，客户端自带搜索工具的（DeepSeek Harness）交给客户端执行
-- 可一键禁用工具调用，只做纯对话
-
-**Key 与统计**
-
-- 多个 `sk-` API Key：可命名、设积分额度，用完返回 429；每个 Key 有请求数、积分、Tokens、完整用量明细、按模型统计与每日折线图（默认最近 7 天，可自选日期范围）
-- 请求日志与统计持久化，按表格展示状态、协议、模型、账号、输入 / 输出 Tokens、耗时与积分，汇总消耗 Tokens 与消耗积分
-
-**一键接入客户端**
-
-- 命令行：Claude Code、Codex CLI、DeepSeek Harness Web，给出启动命令并可直接打开终端运行
-- 桌面应用：Claude 桌面版（3P）、Codex 桌面版、DeepSeek Harness 桌面版、Cursor（CCursor）、VS Code（Copilot 自定义端点）、WorkBuddy、Qoder CN、ZCode、Kimi Code
-- 写入前检测是否安装并完整备份。共用的配置文件只改我们那一部分，还原也只摘掉这部分，你自己的设置原样保留
-- 模型、上下文上限与推理档位按账号实时写入；检测到系统代理拦截回环地址时提前提示
-
 ### 📈 用量与历史
 
-- 账号和 API Key 每次刷新都会记录积分变化，支持平滑趋势曲线、明细表、清空与 Excel 导出
+- 每次刷新账号都会记录积分变化，支持平滑趋势曲线、明细表、清空与 Excel 导出
 - 历史曲线采用不过冲的单调平滑插值，时间轴末端标签完整显示
-- 删除账号或 Key 时同步清理关联历史、网关统计和备份残留，避免孤儿数据继续占用存储
+- 删除账号时同步清理关联历史与备份残留，避免孤儿数据继续占用存储
 
 ### 📦 导入与导出
 
 - 账号支持卡密、精简 JSON、完整备份 JSON、CSV 和 TXT，可粘贴内容或一次选择多个文件导入
 - 导出范围只有一条规则：**勾选了就导勾选的，没勾选就导全部**，不需要在弹窗里再选一次
-- API Key 导出两种格式：`apikey----地区`（分隔符与卡密一致，可回导并还原区域）或每行一个裸 Key
 - 选中多个账号时可「导出为压缩包」或「逐个分割导出」：后者每个账号一个独立文件、外加一个整批的 `all` 文件，一起打成压缩包，文件名与单个导出一致，取出即可回导
 - 导出可保存到文件或复制到剪贴板，账号导出可选择是否包含敏感凭证
 - 导出成功后自动打开所在文件夹并选中该文件，也可在设置里关掉
-- 账号与 Key 的大批量校验 / 刷新并发数均可配置
+- 账号的大批量校验 / 刷新并发数可配置
 
 ### 🧰 常用工具
 
-- **机器码重置与恢复**：一次性重置 Kiro IDE 分散在 `storage.json`、`machineid`、`state.vscdb` 与共享 `deviceid` 四处的设备标识（只改一处 IDE 会从别处读回）；首次重置前自动备份原始值，可一键恢复，每项都能复制或定位文件；写入前自动关闭正在运行的 IDE
 - **网络检测**：查看当前出口 IP 的国家、地区、运营商与时区，一键测试 GitHub、Google、YouTube、Kiro、Amazon 的连通性与延迟；走设置里的代理，看到的就是 Kiro 请求实际经过的出口
-- 「自动同意 AI 操作」可配置 Kiro 的命令、文件和网络操作权限，开启前明确展示安全风险并支持原样恢复
-- 「网关错误自动续接」集中配置重试状态码、次数与间隔
-- 工具状态、目标配置路径和不兼容原因均在页面内可视化展示
+- 出口信息可直接复制，测试结果按站点分组展示，失败时给出原始错误
 
 ### 🧾 系统日志
 
@@ -165,18 +101,18 @@
 ### ⚙️ 个性化设置
 
 - 主题风格（自动 / 浅色 / 深色）、主题色（7 种预设，默认紫罗兰）、布局风格（左右布局 / 上下布局，上下布局把导航放到窗口顶部）、控件尺寸（默认 / 大尺寸，两个列表页的工具栏那一排跟着一起变）、积分精度与删除前确认
-- **隐私打码**：一键遮住邮箱、昵称、API Key、User ID 与备注，截图或录屏前很有用。
+- **隐私打码**：一键遮住邮箱与备注，截图或录屏前很有用。
   邮箱的遮罩串由 md5 前缀生成，同一账号每次结果一致，打码状态下仍能横向比对是不是同一个号
 - **内置浏览器**：指定应用内打开的网页使用哪个地区，50 个常用地区可搜索选择，也可自定义 BCP 47 标签。
   只影响应用内的网页，不改界面语言、也不影响账号所属的 AWS 区域
-- Token / 用量自动刷新间隔、主动续期、批量与导入并发数
-- **数据管理**：账号、Kiro API Key、账号与 API Key 的用量记录、反代 API Key 导出为明文 `.json`（带导出时间与版本），导入时只替换文件里带的部分；
-  「初始化」清掉全部数据并还原改过的外部配置，和初次安装一样；备份计划默认开启，每 30 分钟静默备份一次、保留最新 3 份，周期与份数可改
-- REST / CBOR 用量接口、HTTP 代理、网关端口，以及数据、备份和日志目录快捷打开
+- 密钥与用量的检测间隔、两个待刷新池的刷新间隔与每批数量、批量并发与导入并发数
+- **数据管理**：账号与积分变化记录导出为明文 `.json`（带导出时间与版本），导入时只替换文件里带的部分；
+  「初始化」清掉全部数据，和初次安装一样；备份计划默认开启，每 30 分钟静默备份一次、保留最新 3 份，周期与份数可改
+- REST / CBOR 用量接口、HTTP 代理，以及数据、备份和日志目录快捷打开
 
 ### 🖥️ 桌面端体验
 
-- 系统托盘常驻，可查看当前账号、刷新、切号、复制邮箱和显示窗口；关闭行为支持最小化到托盘 / 退出 / 每次询问
+- 系统托盘常驻，可查看账号汇总（正常 / 异常 / 封禁 / 即将到期）、刷新全部用量、显示窗口；关闭行为支持最小化到托盘 / 退出 / 每次询问
 - macOS 中文菜单栏、自定义协议 `kiro-manager-lite://` / `kml://` 和单实例唤起
 - 管理页详情、图表和各类模态框按用户操作实时挂载，页面切换不再等待退出动画，减少大数据量下的白屏感
 - 关于页手动检查更新会立即显示加载态；GitHub API 失败时自动重试并通过 Releases 页面兜底，失败后可重试或手动更新
@@ -187,14 +123,14 @@
 
 <p align="center">
   <a href="https://github.com/ZoroHasaky/KiroManagerLite/releases/latest">
-    <img src="https://img.shields.io/badge/⬇%20下载最新版-v1.2.5-6c5ce7?style=for-the-badge" alt="下载最新版">
+    <img src="https://img.shields.io/badge/⬇%20下载最新版-v1.2.6-6c5ce7?style=for-the-badge" alt="下载最新版">
   </a>
   <a href="https://github.com/ZoroHasaky/KiroManagerLite/releases">
     <img src="https://img.shields.io/badge/全部版本-Releases-24292f?style=for-the-badge&logo=github" alt="全部版本">
   </a>
 </p>
 
-**最新版本：v1.2.5**（2026-11-23） · 变更详情见 [CHANGELOG.md](CHANGELOG.md)
+**最新版本：v1.2.6**（2026-11-23） · 变更详情见 [CHANGELOG.md](CHANGELOG.md)
 
 ### 选择对应的安装包
 
@@ -255,31 +191,9 @@ Windows 与 Linux 暂不提供 arm64 包：原生依赖 `cbor-extract` 没有对
 
 ![在线登录](docs/screenshots/account-add-online-login.png)
 
-### 切换账号
-
-![切换账号](docs/screenshots/account-change.png)
-
-### 账号 API Key 管理
-
-![账号 API Key 管理](docs/screenshots/account-apikey-manager.png)
-
 ### 账号测活
 
 ![账号测活](docs/screenshots/account-online-test.png)
-
-### API Key 管理
-
-![API Key 管理](docs/screenshots/apikey.png)
-
-### API Key 网关
-
-![API Key 网关](docs/screenshots/apikey-gateway.png)
-
-### 本地反代
-
-![本地反代](docs/screenshots/proxy.png)
-
-各客户端一键接入后的实测截图见 [一键接入实测](docs/proxy-clients.md)。
 
 ### 常用工具
 
@@ -345,53 +259,30 @@ src/
     types.ts             共享类型与默认设置
     errors.ts            错误归一与「是否确定性失败」判定
     refreshPolicy.ts     刷新跳过策略（手动 / 自动共用一份）
-    retryPolicy.ts       网关重试的状态码口径
     regions.ts           AWS 区域列表与分组
     portalLocale.ts      内置浏览器地区：预设、归一化、Accept-Language
     subscription.ts      订阅档位归一
     modelSchema.ts       从模型 schema 解析推理档位并拼请求字段
-    proxyModels.ts       反代的模型名映射与兜底模型表
   main/
     index.ts             应用生命周期与窗口
     ipc.ts               IPC 注册与运行时设置下发
     appMenu.ts           macOS 中文菜单栏
     appProtocol.ts       自定义协议注册与唤起
     ── 账号
-    accountService.ts    校验 / 刷新 / 状态检查 / 切号
+    accountService.ts    校验 / 刷新 / 状态检查
     onlineLogin.ts       在线登录：设备码、社交登录、Enterprise SSO
-    proactiveRenewal.ts  Token 主动续期调度
     ── Kiro 接口与本体
     kiroApi.ts           Token 刷新、用户信息、用量与积分
-    kiroApiKey.ts        账号维度的 API Key 申请与列表（控制面）
     kiroSubscription.ts  订阅：可开通档位与 Stripe 账单 / 结算链接（门户 CSRF 双提交）
-    kiroAuth.ts          IDE 凭证文件读写与 profileArn 决策
+    kiroAuth.ts          profileArn 决策与「读取本机已登录凭证」（只读）
     kiroChat.ts          测活：模型列表与流式对话
     kiroEndpoints.ts     端点、区域映射、Kiro 版本号与客户端 UA 的唯一定义（服务端按版本号准入）
-    kiroMachineId.ts     机器码读取、重置、备份与恢复
-    kiroSettings.ts      IDE settings.json 读写与端点接管
-    kiroPermissions.ts   自动同意 AI 操作：两套机制读写与还原
-    kiroCapability.ts    当前 IDE 版本是否支持自定义网关端点
-    kiroProcess.ts       IDE 进程检测、打开、关闭与重启
     kiroPortal.ts        内置浏览器：私密窗口、工具条、看门狗重试与地区（含官网兜底）
     portalAuth.ts        门户会话身份：cookie 组装与 profileArn 补齐（两个浏览器通道共用）
     externalPortal.ts    前往官网：外部 Chrome 无痕窗口 + CDP 注入账号 cookie
     subscriptionPortal.ts 打开订阅门户：取 Stripe 管理链接并交系统浏览器无痕打开
-    ── API Key 网关
-    keyService.ts        Key 管理与网关编排
-    keyGateway.ts        本地 KRS / CPS 转发
-    gatewayStats.ts      请求数、成功率、RPM 与积分统计
-    gatewayHistory.ts    按分钟聚合的调用历史持久化
-    eventStream.ts       AWS event-stream 帧解析
-    localPorts.ts        端口占用探测与释放
-    ── 本地反代
-    proxyServer.ts       HTTP 服务、路由、鉴权、日志与统计
-    proxyConvert.ts      OpenAI / Anthropic / Gemini 与 Kiro 请求响应互转
-    proxyUpstream.ts     选号策略、重试换号与上游事件流解析
-    proxyClients.ts      各客户端的一键写入、检测、重启与外科式还原
-    proxyKeys.ts         反代 API Key 与按 Key 用量
-    proxyLogStore.ts     请求日志与统计持久化
-    kiroWebSearch.ts     Kiro MCP 联网搜索
     ── 基础设施
+    legacyCleanup.ts     升级时还原旧版本写进用户机器上的外部配置
     net.ts               统一 fetch 与代理
     networkCheck.ts      出口 IP 查询与网站连通性测试
     store.ts             加密持久化
@@ -405,7 +296,7 @@ src/
     index.ts             主窗口用
     portalBar.ts         内置浏览器工具条用，与主窗口完全隔离
   renderer/src/
-    stores/              Pinia：accounts / keys / proxy / settings / update
+    stores/              Pinia：accounts / settings / subscriptionLinks / update
     views/               Home / Accounts / Keys / Proxy / Tools / Logs / Settings / About
     components/          layout、accounts、keys、proxy、tools、common
     utils/               格式化、打码、导入导出、图表、托盘桥接
@@ -418,19 +309,16 @@ src/
 - 账号凭证保存在本机 electron-store 加密文件里，不会上传到任何第三方服务
 - 渲染进程开启 contextIsolation、关闭 nodeIntegration，所有系统调用走 preload 白名单
 - 导出内容包含可直接登录的凭证，请勿放到公开位置；导出时可关闭「包含凭证」
-- Google / GitHub 在线登录期间会临时把 `kiro://` 协议注册到本应用（Kiro 授权服务只接受这个固定回调地址），登录结束或应用退出时立即注销，不会长期抢占 Kiro IDE 的协议
+- Google / GitHub 在线登录期间会临时把 `kiro://` 协议注册到本应用（Kiro 授权服务只接受这个固定回调地址），登录结束或应用退出时立即注销，不会长期抢占其它程序的协议
 - Enterprise SSO 的回调服务器只监听 `127.0.0.1` 的随机端口，授权完成即关闭，state 与 PKCE 全程校验
 - 「前往官网」用的是不持久化的内存会话分区，退出即清；每次打开前先清空 cookie，不会串号，也不会写入你自己浏览器的登录态
-- 开启本地网关会改写 Kiro IDE 的端点配置，改前留备份、关闭时还原；「自动同意 AI 操作」同样会备份原值并可原样恢复
-- 本地反代默认只监听 `127.0.0.1` 并强制校验 API Key；开放到局域网且关闭校验时会醒目提示，因为那等于同网段任何设备都能用你的额度
-- 一键接入客户端会改写对方的配置文件，写入前完整备份，还原时只摘掉本应用写入的部分
-- 重置机器码前自动备份原始值，可随时恢复
-
+- 本应用不向任何外部程序写配置：账号凭证只存在自己的加密库里。旧版本（≤1.2.5）改写过的 Kiro IDE 端点、
+  桌面客户端配置与 `KIRO_API_KEY`，升级后会在一启动时一次性还原
 ---
 
 ## 🔖 更新日志
 
-各版本变更记录见 [CHANGELOG.md](CHANGELOG.md)，当前版本 v1.2.5，最后更新于 2026-11-23。
+各版本变更记录见 [CHANGELOG.md](CHANGELOG.md)，当前版本 v1.2.6，最后更新于 2026-11-23。
 
 ---
 
@@ -447,7 +335,3 @@ src/
 本项目以 AGPL-3.0 许可开源。感谢以下开源项目的先行探索，本项目在它们的基础上学习、借鉴与重新实现：
 
 - [Kiro-account-manager](https://github.com/chaogei/Kiro-account-manager)：Kiro 多账号管理器，本项目账户管理接口实现的来源（AGPL-3.0）
-- [Kiro-Go](https://github.com/Quorinex/Kiro-Go)：把 Kiro 账号转换为 OpenAI / Anthropic 兼容 API 的 Go 服务
-- [kiro.rs](https://github.com/hank9999/kiro.rs)：Rust 编写的 Anthropic Claude API 兼容代理，将请求转换为 Kiro API
-- [new-api](https://github.com/QuantumNous/new-api)：连接模型、应用与 Agent 的 AI 网关
-- [sub2api](https://github.com/touwaeriol/sub2api)：AI API 网关平台，订阅配额分发管理

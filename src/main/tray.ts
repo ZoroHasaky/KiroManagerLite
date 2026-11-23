@@ -1,5 +1,5 @@
-// 系统托盘（macOS 菜单栏）：展示当前账号信息，提供刷新 / 切号 / 显示窗口 / 退出
-import { Tray, Menu, app, clipboard, nativeImage } from 'electron'
+// 系统托盘（macOS 菜单栏）：展示账号汇总，提供刷新用量 / 显示窗口 / 退出
+import { Tray, Menu, app, nativeImage } from 'electron'
 import type { MenuItemConstructorOptions, NativeImage } from 'electron'
 import { join } from 'path'
 import type { TrayAction, TraySnapshot } from '../shared/types'
@@ -7,7 +7,7 @@ import { existsSync } from 'fs'
 import { activePackRoot, currentVersion } from './packManager'
 
 let tray: Tray | null = null
-let snapshot: TraySnapshot = { total: 0, switchable: 0 }
+let snapshot: TraySnapshot = { total: 0, active: 0, error: 0, banned: 0, expiring: 0 }
 
 interface TrayCallbacks {
   onShowWindow: () => void
@@ -58,73 +58,27 @@ function buildMenu(): Menu {
   const items: MenuItemConstructorOptions[] = [
     disabled(`Kiro Manager Lite v${currentVersion()}`, 'app'),
     { type: 'separator' },
-    disabled(
-      snapshot.email ? `已登录：${snapshot.email}` : '当前未登录 Kiro IDE',
-      snapshot.email ? 'online' : 'offline'
-    ),
-    { type: 'separator' }
-  ]
-
-  if (snapshot.email) {
-    items.push(
-      disabled('当前账户', 'account'),
-      disabled(`   ${snapshot.email}`),
-      disabled(
-        `   身份: ${snapshot.idp ?? '未知'} | ${snapshot.subscription ?? '未知'} | ${snapshot.status ?? '未知'}`,
-        snapshot.healthy ? 'ok' : 'warning'
-      )
-    )
-    if (snapshot.usageLimit) {
-      items.push(
-        disabled(`   用量: ${snapshot.usageCurrent ?? 0} / ${snapshot.usageLimit} Credits`, 'usage')
-      )
-    }
-    if (snapshot.daysRemaining !== undefined) {
-      items.push(disabled(`   订阅: 剩 ${snapshot.daysRemaining} 天`, 'usage'))
-    }
-    if (snapshot.tokenLife) {
-      items.push(disabled(`   Token: ${snapshot.tokenLife}`, 'refresh'))
-    }
-  } else {
-    items.push(disabled(`共 ${snapshot.total} 个账号，去主窗口切换一个使用`, 'account'))
-  }
-
-  items.push(
+    disabled(`共 ${snapshot.total} 个账号`, 'account'),
+    disabled(`   正常 ${snapshot.active} · 异常 ${snapshot.error} · 封禁 ${snapshot.banned}`),
+    disabled(`   ${snapshot.expiring} 个账号 7 天内到期`, snapshot.expiring ? 'warning' : 'ok'),
     { type: 'separator' },
     {
-      label: '刷新账户信息',
+      label: '刷新全部用量',
       icon: icon('refresh'),
-      enabled: !!snapshot.email,
-      click: () => callbacks?.onAction('refresh')
-    },
-    {
-      label: `切换到下一个账户 (${snapshot.switchable} 个可用)`,
-      icon: icon('switch'),
-      enabled: snapshot.switchable > 0,
-      click: () => callbacks?.onAction('switch-next')
-    },
-    {
-      label: '复制当前邮箱',
-      icon: icon('copy'),
-      enabled: !!snapshot.email,
-      click: () => {
-        // writeText 自 Electron 44 起返回 Promise，失败不该冒成未处理的拒绝
-        if (snapshot.email) void clipboard.writeText(snapshot.email).catch(() => undefined)
-      }
+      enabled: snapshot.total > 0,
+      click: () => callbacks?.onAction('refresh-usage')
     },
     { type: 'separator' },
     { label: '显示主窗口', icon: icon('window'), click: () => callbacks?.onShowWindow() },
     { label: '退出程序', icon: icon('quit'), click: () => callbacks?.onQuit() }
-  )
+  ]
 
   return Menu.buildFromTemplate(items)
 }
 
 function refreshMenu(): void {
   tray?.setContextMenu(buildMenu())
-  tray?.setToolTip(
-    snapshot.email ? `Kiro Manager Lite · ${snapshot.email}` : 'Kiro Manager Lite · 未登录'
-  )
+  tray?.setToolTip(`Kiro Manager Lite · ${snapshot.total} 个账号`)
 }
 
 /** 渲染进程推送账号摘要后刷新菜单 */

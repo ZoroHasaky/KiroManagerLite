@@ -1,11 +1,8 @@
 // 数据导出 / 导入（明文 JSON）与初始化
 //
-// 导出只带「换台机器也要接着用」的数据，其余（设置、反代监听配置、桌面 agent 写入记录、日志……）一律不带：
-//  - accounts：账号（含凭证、分组、当前账号）
-//  - apiKeys：Kiro API Key 列表与分组（不含网关开关、端口、IDE 端点原值，那些和本机绑定）
+// 导出只带「换台机器也要接着用」的数据，其余（设置、日志、窗口位置……）一律不带：
+//  - accounts：账号（含凭证、分组）
 //  - accountUsageHistory：账号的积分变化记录
-//  - apiKeyUsageHistory：API Key 的调用统计与分钟曲线
-//  - proxyApiKeys：本地反代的 API Key（默认 Key + 自定义 Key）
 //
 // 兼容性约定（以后增减字段照这个来）：
 //  - 顶层 format 固定，用来认文件；schemaVersion 只在「旧版读不懂新格式」时才加一，新增字段、新增分区都不用加。
@@ -13,7 +10,10 @@
 //  - 读不认识的分区直接跳过；记录里不认识的字段原样保留（新版本导出、旧版本导入再导出也不会丢）。
 //  - 升级格式时在 migrate 里把旧版本转换成当前结构，导入代码只面对最新结构。
 //
-// 文件是明文，里面有账号凭证与 API Key，界面上会提醒妥善保管。
+// 旧版本导出的文件里还有 apiKeys / apiKeyUsageHistory / proxyApiKeys 三个分区，
+// 那三块对应的功能已经移除，导入时按「不认识的分区」跳过即可，不需要额外处理。
+//
+// 文件是明文，里面有账号凭证，界面上会提醒妥善保管。
 import { app, session } from 'electron'
 import Store from 'electron-store'
 import { existsSync, rmSync } from 'fs'
@@ -21,44 +21,33 @@ import * as path from 'path'
 import {
   getAccountData,
   getBackupDir,
-  getKeyData,
-  getProxyApiKeys,
-  getProxyConfig,
   PRE_UPGRADE_STORE_COPY,
   resetStoreData,
-  saveProxyConfig,
-  setAccountData,
-  setKeyData,
-  setProxyApiKeys
+  setAccountData
 } from './store'
 import { flushUsageHistory } from './usageHistory'
-import { flushGatewayHistory } from './gatewayHistory'
-import { flushProxyData } from './proxyServer'
 import { currentVersion } from './packManager'
-import type { AccountStoreData, DataBackupSummary, KeyGatewayData, ProxyApiKey } from '../shared/types'
+import type { AccountStoreData, DataBackupSummary } from '../shared/types'
 
 const FORMAT = 'kiro-manager-lite-data'
 /** 当前写出的结构版本；读到更大的版本仍按已知字段导入，并在摘要里提示 */
 const SCHEMA_VERSION = 1
 
-/** 辅助库的 electron-store 名字；和各模块里 new Store({ name }) 保持一致 */
+/** 辅助库的 electron-store 名字；和 usageHistory 里 new Store({ name }) 保持一致 */
 const USAGE_HISTORY_STORE = 'kiro-usage-history'
-const GATEWAY_HISTORY_STORE = 'kiro-gateway-history'
-/** 初始化时一并清掉的辅助库（含反代请求日志，它不导出） */
-const AUX_STORES = [USAGE_HISTORY_STORE, GATEWAY_HISTORY_STORE, 'kiro-proxy-logs', 'kiro-proxy-usage'] as const
+/**
+ * 初始化时一并清掉的辅助库。
+ *
+ * 后两个（kiro-proxy-logs / kiro-proxy-usage）是旧版本本地反代留下的，
+ * 功能已移除，但文件还在用户数据目录里；清除数据时顺手删掉，日常启动不管它们。
+ */
+const AUX_STORES = [USAGE_HISTORY_STORE, 'kiro-proxy-logs', 'kiro-proxy-usage'] as const
 
 type Json = Record<string, unknown>
 
 interface DataSections {
   accounts?: AccountStoreData
-  apiKeys?: Pick<KeyGatewayData, 'keys' | 'groups'>
   accountUsageHistory?: Json
-  apiKeyUsageHistory?: { totals?: Json; points?: Json }
-  proxyApiKeys?: {
-    /** 默认 Key 存在反代配置里，不在列表中，单独带出来 */
-    defaultKey?: { key: string; name?: string; creditLimit?: number } | null
-    keys?: ProxyApiKey[]
-  }
 }
 
 export interface DataFile {
@@ -100,16 +89,10 @@ function localIso(at: number): string {
   return `${local}${sign}${pad(offset / 60)}:${pad(offset % 60)}`
 }
 
-/** 生成导出内容（格式化的 JSON 文本）。先把各模块内存里没落盘的数据刷下去，导出的才是最新的 */
+/** 生成导出内容（格式化的 JSON 文本）。先把内存里没落盘的数据刷下去，导出的才是最新的 */
 export function buildBackup(): string {
   flushUsageHistory()
-  flushGatewayHistory()
-  flushProxyData()
   const at = Date.now()
-  const keyData = getKeyData()
-  const proxyConfig = getProxyConfig()
-  const defaultKey = proxyConfig.apiKey.trim()
-  const gateway = auxStore(GATEWAY_HISTORY_STORE)
   const file: DataFile = {
     format: FORMAT,
     schemaVersion: SCHEMA_VERSION,
@@ -119,18 +102,7 @@ export function buildBackup(): string {
     platform: process.platform,
     sections: {
       accounts: getAccountData(),
-      apiKeys: { keys: keyData.keys, groups: keyData.groups ?? [] },
-      accountUsageHistory: (auxStore(USAGE_HISTORY_STORE).get('history') as Json) ?? {},
-      apiKeyUsageHistory: {
-        totals: (gateway.get('totals') as Json) ?? {},
-        points: (gateway.get('points') as Json) ?? {}
-      },
-      proxyApiKeys: {
-        defaultKey: defaultKey
-          ? { key: defaultKey, name: proxyConfig.defaultKeyName, creditLimit: proxyConfig.defaultKeyCreditLimit }
-          : null,
-        keys: getProxyApiKeys()
-      }
+      accountUsageHistory: (auxStore(USAGE_HISTORY_STORE).get('history') as Json) ?? {}
     }
   }
   return `${JSON.stringify(file, null, 2)}\n`
@@ -166,15 +138,12 @@ function arrayLength(value: unknown): number {
 
 export function summarizeBackup(file: DataFile): BackupSummary {
   const s = file.sections
-  const proxyKeys = arrayLength(s.proxyApiKeys?.keys) + (s.proxyApiKeys?.defaultKey?.key ? 1 : 0)
   return {
     exportedAt: typeof file.exportedAt === 'number' ? file.exportedAt : 0,
     appVersion: typeof file.appVersion === 'string' ? file.appVersion : '',
     newerSchema: file.schemaVersion > SCHEMA_VERSION,
     accounts: isObject(s.accounts) ? arrayLength(s.accounts.accounts) : null,
-    apiKeys: isObject(s.apiKeys) ? arrayLength(s.apiKeys.keys) : null,
-    proxyKeys: isObject(s.proxyApiKeys) ? proxyKeys : null,
-    usageHistory: isObject(s.accountUsageHistory) || isObject(s.apiKeyUsageHistory)
+    usageHistory: isObject(s.accountUsageHistory)
   }
 }
 
@@ -196,43 +165,14 @@ export function applyBackup(file: DataFile): void {
     })
   }
 
-  if (isObject(s.apiKeys) && Array.isArray(s.apiKeys.keys)) {
-    // 网关开关、端口、IDE 端点原值是本机的，只换 Key 和分组；当前 Key 不在新列表里时 getKeyData 会自动置空
-    const current = getKeyData()
-    setKeyData({
-      ...current,
-      keys: s.apiKeys.keys,
-      groups: Array.isArray(s.apiKeys.groups) ? s.apiKeys.groups : []
-    })
-  }
-
   if (isObject(s.accountUsageHistory)) {
     auxStore(USAGE_HISTORY_STORE).set('history', s.accountUsageHistory)
-  }
-
-  if (isObject(s.apiKeyUsageHistory)) {
-    const gateway = auxStore(GATEWAY_HISTORY_STORE)
-    gateway.set('totals', isObject(s.apiKeyUsageHistory.totals) ? s.apiKeyUsageHistory.totals : {})
-    gateway.set('points', isObject(s.apiKeyUsageHistory.points) ? s.apiKeyUsageHistory.points : {})
-  }
-
-  if (isObject(s.proxyApiKeys)) {
-    if (Array.isArray(s.proxyApiKeys.keys)) setProxyApiKeys(s.proxyApiKeys.keys)
-    const def = s.proxyApiKeys.defaultKey
-    if (isObject(def) && typeof def.key === 'string' && def.key.trim()) {
-      saveProxyConfig({
-        apiKey: def.key.trim(),
-        ...(typeof def.name === 'string' ? { defaultKeyName: def.name } : {}),
-        ...(typeof def.creditLimit === 'number' ? { defaultKeyCreditLimit: def.creditLimit } : {})
-      })
-    }
   }
 }
 
 /**
  * 全部数据回到初始状态（同样要紧接着重启）：主库、辅助库、备份目录、内置浏览器登录缓存。
- * 系统日志由调用方先用 clearLogs 清掉；还原外部配置（机器码、Kiro IDE 端点、权限、桌面 agent）也由调用方先做，
- * 这里只管本应用自己的数据。
+ * 系统日志由调用方先用 clearLogs 清掉；这里只管本应用自己的数据。
  */
 export function wipeLocalData(): void {
   resetStoreData()

@@ -10,8 +10,6 @@ import {
   GlobalOutlined,
   InfoCircleOutlined,
   KeyOutlined,
-  LoginOutlined,
-  LogoutOutlined,
   ProfileOutlined,
   SyncOutlined,
   WalletOutlined
@@ -65,8 +63,6 @@ const emit = defineEmits<{
   info: [account: Account]
   edit: [account: Account]
   remove: [account: Account]
-  switch: [account: Account]
-  logout: [account: Account]
   'refresh-key': [account: Account]
   'refresh-usage': [account: Account]
   'copy-token': [account: Account]
@@ -195,8 +191,6 @@ const tokenState = computed(() => {
 })
 
 type ActionKey =
-  | 'switch'
-  | 'logout'
   | 'refresh-key'
   | 'refresh-usage'
   | 'copy-token'
@@ -225,23 +219,8 @@ interface CardAction {
   color?: string
 }
 
-/** 首个按钮随登录状态切换：已登录显示退出登录，未登录显示登录 */
 const actions = computed<CardAction[]>(() => [
   { id: 'info', action: 'info', title: '信息（查看账号详情）', icon: ProfileOutlined },
-  props.account.isActive
-    ? {
-        id: 'logout',
-        action: 'logout',
-        title: '退出登录（清理 Kiro IDE 凭证）',
-        icon: LogoutOutlined,
-        color: '#52c41a'
-      }
-    : {
-        id: 'switch',
-        action: 'switch',
-        title: '登录此账号（写入 Kiro IDE）',
-        icon: LoginOutlined
-      },
   {
     id: 'refresh',
     title: '刷新',
@@ -310,7 +289,6 @@ function onCardClick(): void {
       `mode-${props.mode}`,
       {
         'is-selected': props.selected,
-        'is-active': props.account.isActive,
         'is-context': props.contextActive
       }
     ]"
@@ -334,9 +312,6 @@ function onCardClick(): void {
           :title="props.account.note && !privacy ? props.account.note : undefined"
         >备注：{{ note || '-' }}</span>
       </div>
-      <!-- 「使用中」和状态一起摆右上角；状态钉在最外侧，位置在所有卡片上保持一致 -->
-      <!-- 带描边：和右边的状态标签一致，无边框的实底块摆在角上显得发虚 -->
-      <a-tag v-if="props.account.isActive" color="green" class="head-tag">使用中</a-tag>
       <a-tag :color="status.color" class="status-tag">{{ status.text }}</a-tag>
     </div>
 

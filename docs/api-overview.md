@@ -76,10 +76,10 @@
 | 接口 | 作用 | 调用位置 |
 | --- | --- | --- |
 | `GET /ListAvailableModels`（q 域） | 拉账号可用模型，分页，带 profileArn 候选重试 | `kiroChat.ts` |
-| `POST /generateAssistantResponse`（q 域） | 对话主端点，流式返回；账号测活与反代都用 | `kiroChat.ts` / `proxyUpstream.ts` |
+| `POST /generateAssistantResponse`（q 域） | 对话主端点，流式返回；账号测活使用 | `kiroChat.ts` |
 | `POST /generateAssistantResponse`（codewhisperer 域） | 对话回退端点 | `kiroChat.ts` / `proxyUpstream.ts` |
-| `GET /List-Available-Models`（management 域） | API Key 的模型列表 | `kiroChat.ts` / `keyGateway.ts` |
-| `POST /generateAssistantResponse`（runtime 域） | API Key 的对话端点 | `kiroChat.ts` / `proxyUpstream.ts` |
+| `GET /List-Available-Models`（management 域） | API Key 的模型列表（本应用已不提供该功能，仅存档） | — |
+| `POST /generateAssistantResponse`（runtime 域） | API Key 的对话端点（本应用已不提供该功能，仅存档） | — |
 | `POST /mcp`（q 域） | Kiro 自带联网搜索，JSON-RPC 调 `web_search` 工具 | `kiroWebSearch.ts` |
 
 ### 注意事项
@@ -110,14 +110,16 @@
 
 ---
 
-## 六、API Key（ksk_）管理
+## 六、API Key（ksk_）管理（历史存档）
+
+> 本应用已不再是 API Key 管理器，这一节只作为上游接口的参考保留，代码里没有对应实现。
 
 | 接口 | 作用 | 调用位置 |
 | --- | --- | --- |
-| `POST /` + `x-amz-target: CreateApiKey` | 为账号生成 API Key，只在创建时返回完整明文 | `kiroApiKey.ts` |
-| `POST /` + `x-amz-target: ListApiKeys` | 列出账号已创建的 Key（只有前缀） | `kiroApiKey.ts` |
-| `POST /` + `x-amz-target: DeleteApiKey` | 删除指定 Key | `kiroApiKey.ts` |
-| `GET /Get-Usage-Limits` | Key 的用量；`isEmailRequired=true` 时带绑定邮箱 | `keyGateway.ts` |
+| `POST /` + `x-amz-target: CreateApiKey` | 为账号生成 API Key，只在创建时返回完整明文 | — |
+| `POST /` + `x-amz-target: ListApiKeys` | 列出账号已创建的 Key（只有前缀） | — |
+| `POST /` + `x-amz-target: DeleteApiKey` | 删除指定 Key | — |
+| `GET /Get-Usage-Limits` | Key 的用量；`isEmailRequired=true` 时带绑定邮箱 | — |
 
 ### 注意事项
 
@@ -138,14 +140,11 @@
 
 ---
 
-## 八、本地转发链路
+## 八、本地转发链路（已移除）
 
-这两条不是 Kiro 接口，但会向上游转发请求，排查问题时容易混淆：
-
-| 组件 | 作用 | 位置 |
-| --- | --- | --- |
-| 本地反代 | 把 Anthropic / OpenAI 格式转成 Kiro 的 `generateAssistantResponse`；自动模式先 q 域后 codewhisperer 域 | `proxyUpstream.ts` |
-| Key 网关 | 把 IDE 的 OAuth 请求替换成 `ksk_` API Key，转发到 runtime / management，并剥离 `profileArn` | `keyGateway.ts` |
+本应用不再提供本地反代与 Key 网关，也不再改写 Kiro IDE 的端点配置。
+旧版本（≤1.2.5）写过的东西会在升级后的首次启动由 `legacyCleanup.ts` 还原。
+这一节只保留下来说明历史链路，排查「为什么某个端口没监听」时可以参考。
 
 ---
 
@@ -154,7 +153,6 @@
 | 场景 | 需要 CSRF | 需要 profileArn | 认证方式 |
 | --- | --- | --- | --- |
 | 用量 / 模型列表 | 否 | 是 | Bearer |
-| 对话 | 否 | 是（API Key 路径除外） | Bearer |
+| 对话 | 否 | 是 | Bearer |
 | 订阅档位 / 管理链接 | **是** | 否 | Cookie + CSRF |
-| API Key 管理 | 否 | 是 | Bearer + `x-amz-target` |
-| MCP 搜索 | 否 | 是（API Key 除外） | Bearer |
+| MCP 搜索 | 否 | 是 | Bearer |

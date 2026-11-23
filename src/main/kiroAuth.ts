@@ -1,13 +1,15 @@
-// Kiro IDE 凭证文件同步层
+// Kiro 凭证的 ARN 规则与「读取本地登录」支持
 //
-// Kiro IDE 把 token 持久化在 ~/.aws/sso/cache/kiro-auth-token.json 并自行做 refresh loop。
-// 切号 / 刷新时必须以这个文件为唯一事实源，否则 IDE 会拿着被服务端轮换作废的旧
-// refreshToken 去调 OIDC，拿到 401 后直接把用户登出。
+// 本文件不再向 Kiro IDE 的凭证目录（~/.aws/sso/cache）写任何东西：
+// 账号的刷新只更新本应用自己的数据，IDE 那边由使用者自行管理。
+//
+// 保留的读取入口只服务一个场景：添加账号时把本机 IDE 已登录的凭证读出来做初始化，
+// 属于「少手填几个字段」的便利，不改变 IDE 的状态。
 import * as fs from 'fs/promises'
 import * as path from 'path'
 import * as os from 'os'
 import * as crypto from 'crypto'
-import { KIRO_OIDC_SCOPES, KIRO_START_URL, serviceRegion } from './kiroEndpoints'
+import { KIRO_START_URL, serviceRegion } from './kiroEndpoints'
 import { pushUnique } from './utils'
 import { DEFAULT_REGION } from '../shared/regions'
 import type { AuthMethod, IdpType, LocalKiroCredentials } from '../shared/types'
@@ -17,16 +19,7 @@ const KIRO_AUTH_TOKEN_FILE = 'kiro-auth-token.json'
 const KIRO_AUTH_TOKEN_PATH = path.join(KIRO_SSO_CACHE_DIR, KIRO_AUTH_TOKEN_FILE)
 
 /**
- * 渲染层传来的凭证文件路径只认 SSO 缓存目录下直属的 .json 文件，
- * 其余一律返回 undefined，避免借此在文件管理器里定位任意路径。
- */
-export function ssoCacheFile(target: string): string | undefined {
-  const file = path.resolve(String(target ?? ''))
-  return path.dirname(file) === KIRO_SSO_CACHE_DIR && file.endsWith('.json') ? file : undefined
-}
-
-/**
- * Kiro IDE 源码里给 BuilderId 硬编码的占位符 ARN。
+ * Kiro 源码里给 BuilderId 硬编码的占位符 ARN。
  *
  * 两个用途，别混：IDE 内部逻辑依赖 token 文件里存在该字段；
  * 而 runtime 接口（getUsageLimits / ListAvailableModels）也把 profileArn 当必填，
@@ -57,10 +50,7 @@ function isPlaceholderArn(arn?: string | null): boolean {
   return arn === KIRO_BUILDER_ID_PLACEHOLDER_ARN
 }
 
-/**
- * 决定写入磁盘时该用哪个 profileArn。
- * 取候选里第一个有值的项，优先级规则与 profileArnCandidates 保持同一份实现。
- */
+/** 调接口时该用哪个 profileArn：取候选里第一个有值的项 */
 export function resolveProfileArn(input: {
   profileArn?: string
   authMethod?: string
@@ -74,12 +64,12 @@ export function resolveProfileArn(input: {
 }
 
 /**
- * 按优先级给出「写盘时可以依次尝试」的 profileArn 候选。
+ * 按优先级给出「调接口时可以依次尝试」的 profileArn 候选。
  *
- * profileArn 写错是 IDE 报 “Unable to fetch account usage data: Invalid token /
- * User is not authorized” 的常见原因：Enterprise 账号必须用它自己 profile 的 ARN，
- * 而 BuilderId 根本没有 profile 概念，带上任何 ARN 都可能被拒。
- * 所以这里给出多个候选，由调用方逐个实测后再写盘。
+ * profileArn 给错是 403 "User is not authorized" 的常见原因：
+ * Enterprise 账号必须用它自己 profile 的 ARN，而 BuilderId 没有 profile 概念，
+ * 带上任何真实 ARN 都可能被拒，只能带占位符。所以这里给出多个候选，
+ * 由调用方逐个实测。
  */
 export function profileArnCandidates(input: {
   profileArn?: string
@@ -114,13 +104,13 @@ export function profileArnCandidates(input: {
  *
  * 切勿用在用量接口上：getUsageLimits 把 profileArn 当必填，
  * BuilderId 恰恰要带这个占位符才回 200，剥掉就是
- * 403 "User is not authorized to make this call."。用量那边走 usageProfileArn。
+ * 403 "User is not authorized to make this call."。
  */
 export function arnForApiCall(arn?: string): string | undefined {
   return arn && !isPlaceholderArn(arn) ? arn : undefined
 }
 
-export interface KiroAuthTokenFile {
+interface KiroAuthTokenFile {
   accessToken: string
   refreshToken: string
   expiresAt: string
@@ -143,119 +133,7 @@ function listCacheFiles(): Promise<string[]> {
   return fs.readdir(KIRO_SSO_CACHE_DIR).catch(() => [] as string[])
 }
 
-/**
- * 删除 sso cache 里符合条件的文件，返回删除数量。
- * 删不掉的（占用、权限）跳过，不影响其它文件与后续写入。
- */
-async function deleteCacheFiles(
-  shouldDelete: (fileName: string) => boolean,
-  onError?: (fileName: string, error: unknown) => void
-): Promise<number> {
-  let deleted = 0
-  for (const file of await listCacheFiles()) {
-    if (!shouldDelete(file)) continue
-    try {
-      await fs.unlink(path.join(KIRO_SSO_CACHE_DIR, file))
-      deleted++
-    } catch (e) {
-      onError?.(file, e)
-    }
-  }
-  return deleted
-}
-
-export interface WriteTokenInput {
-  accessToken: string
-  refreshToken: string
-  expiresAtIso: string
-  authMethod: AuthMethod
-  provider: IdpType
-  region?: string
-  startUrl?: string
-  clientId?: string
-  clientSecret?: string
-  profileArn?: string
-  /** 写完后删掉 sso cache 里其它陈旧的客户端注册文件 */
-  pruneStaleRegistrations?: boolean
-}
-
-/**
- * 写入仅本人可读的 JSON 文件。
- * writeFile 的 mode 只在新建时生效，已存在的文件要再 chmod 一次。
- */
-async function writePrivateJson(filePath: string, data: unknown): Promise<void> {
-  await fs.writeFile(filePath, JSON.stringify(data, null, 2), { mode: 0o600 })
-  await fs.chmod(filePath, 0o600).catch(() => undefined)
-}
-
-/**
- * 删除 sso cache 里除当前注册文件之外的其它 *.json。
- * 上一个账号留下的客户端注册文件会让 IDE 用错 clientId/secret 去刷新，
- * 刷新失败后 IDE 直接把用户登出，所以切号时顺手清掉。
- */
-function pruneStaleClientRegistrations(keepFileName?: string): Promise<number> {
-  return deleteCacheFiles(
-    (file) =>
-      file.endsWith('.json') && file !== KIRO_AUTH_TOKEN_FILE && file !== keepFileName
-  )
-}
-
-/** 以 Kiro IDE 兼容格式写入 token（IdC 额外写客户端注册文件） */
-export async function writeKiroAuthToken(
-  input: WriteTokenInput
-): Promise<{ tokenPath: string; clientRegPath?: string; prunedRegistrations: number }> {
-  await fs.mkdir(KIRO_SSO_CACHE_DIR, { recursive: true })
-  const clientIdHash = computeClientIdHash(input.startUrl)
-
-  const tokenData: Record<string, unknown> =
-    input.authMethod === 'social'
-      ? {
-          accessToken: input.accessToken,
-          refreshToken: input.refreshToken,
-          profileArn: input.profileArn,
-          expiresAt: input.expiresAtIso,
-          authMethod: input.authMethod,
-          provider: input.provider
-        }
-      : {
-          accessToken: input.accessToken,
-          refreshToken: input.refreshToken,
-          expiresAt: input.expiresAtIso,
-          clientIdHash,
-          authMethod: input.authMethod,
-          provider: input.provider,
-          region: input.region || DEFAULT_REGION,
-          profileArn: input.profileArn
-        }
-
-  // profileArn 为空时不写该字段：BuilderId 带上无效 ARN 会被接口拒掉
-  if (!input.profileArn) delete tokenData.profileArn
-
-  await writePrivateJson(KIRO_AUTH_TOKEN_PATH, tokenData)
-
-  let clientRegPath: string | undefined
-  let regFileName: string | undefined
-  if (input.authMethod !== 'social' && input.clientId && input.clientSecret) {
-    regFileName = `${clientIdHash}.json`
-    clientRegPath = path.join(KIRO_SSO_CACHE_DIR, regFileName)
-    // IDE 客户端注册有效期 90 天，且格式为去掉 Z 的 ISO 字符串
-    const expiresAt = new Date(Date.now() + 90 * 24 * 3600 * 1000).toISOString().replace('Z', '')
-    await writePrivateJson(clientRegPath, {
-      clientId: input.clientId,
-      clientSecret: input.clientSecret,
-      expiresAt,
-      scopes: KIRO_OIDC_SCOPES
-    })
-  }
-
-  const prunedRegistrations = input.pruneStaleRegistrations
-    ? await pruneStaleClientRegistrations(regFileName)
-    : 0
-
-  return { tokenPath: KIRO_AUTH_TOKEN_PATH, clientRegPath, prunedRegistrations }
-}
-
-export async function readKiroAuthToken(): Promise<KiroAuthTokenFile | null> {
+async function readKiroAuthToken(): Promise<KiroAuthTokenFile | null> {
   try {
     const raw = await fs.readFile(KIRO_AUTH_TOKEN_PATH, 'utf-8')
     const parsed = JSON.parse(raw) as KiroAuthTokenFile
@@ -292,11 +170,16 @@ async function findClientRegistration(clientIdHash?: string): Promise<ClientRegi
   return null
 }
 
-/** 读取本地 Kiro IDE 已登录的完整凭证（含 IdC 客户端注册） */
-export async function readLocalKiroCredentials(): Promise<LocalKiroCredentials | { error: string }> {
+/**
+ * 读取本地 Kiro 已登录的完整凭证（含 IdC 客户端注册），供「添加账号」时预填表单。
+ * 只读，不修改任何文件。
+ */
+export async function readLocalKiroCredentials(): Promise<
+  LocalKiroCredentials | { error: string }
+> {
   const token = await readKiroAuthToken()
   if (!token) {
-    return { error: '找不到 kiro-auth-token.json 或缺少 refreshToken，请先在 Kiro IDE 中登录' }
+    return { error: '找不到 kiro-auth-token.json 或缺少 refreshToken，请先在 Kiro 中登录' }
   }
 
   const isSocial = token.authMethod === 'social'
@@ -306,7 +189,7 @@ export async function readLocalKiroCredentials(): Promise<LocalKiroCredentials |
   if (!isSocial) {
     const reg = await findClientRegistration(token.clientIdHash)
     if (!reg?.clientId || !reg.clientSecret) {
-      return { error: '找不到客户端注册文件，请确认已在 Kiro IDE 中完成登录' }
+      return { error: '找不到客户端注册文件，请确认已在 Kiro 中完成登录' }
     }
     clientId = reg.clientId
     clientSecret = reg.clientSecret
@@ -321,12 +204,4 @@ export async function readLocalKiroCredentials(): Promise<LocalKiroCredentials |
     authMethod: isSocial ? 'social' : 'IdC',
     provider: (token.provider as IdpType) || 'BuilderId'
   }
-}
-
-/** 清空 SSO 缓存目录（IDE 退出登录） */
-export function clearKiroSsoCache(): Promise<number> {
-  return deleteCacheFiles(
-    () => true,
-    (file, e) => console.warn('[KiroAuth] failed to delete', file, e)
-  )
 }

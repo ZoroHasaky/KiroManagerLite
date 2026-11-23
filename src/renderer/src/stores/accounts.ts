@@ -13,9 +13,7 @@ import {
   type BatchResult,
   type IdpType,
   type OnlineLoginCredentials,
-  type ProactiveRenewalPayload,
   type SubscriptionType,
-  type SwitchAccountResult,
   type VerifyCredentialsInput
 } from '@shared/types'
 import { errorMessage, isCredentialRejected } from '@shared/errors'
@@ -151,7 +149,7 @@ const DEFAULT_EXPIRES_IN = 3600
  * 池内条目：入池时记下账号的「刷新标记」快照，出队时据此判断中途是否已被刷过。
  *
  * 手动刷新成功后也会显式出池（见 dequeueRefresh），这里是第二道保险：
- * 覆盖「池外其它途径改了凭证」（比如主进程主动续期）导致的那条记录过期。
+ * 覆盖「池外其它途径改了凭证」导致的那条记录过期。
  */
 interface RefreshPoolEntry {
   id: string
@@ -253,7 +251,6 @@ export const useAccountsStore = defineStore('accounts', () => {
   const accounts = throttledShallowRef<Account[]>([], ACCOUNTS_NOTIFY_MS)
   /** 分组定义，始终按 order 升序维护，界面直接按数组顺序渲染 */
   const groups = ref<AccountGroup[]>([])
-  const activeAccountId = ref<string | null>(null)
   const selectedIds = ref<string[]>([])
   /**
    * 是否正在看回收站。打开时列表只显示回收站里的账号（搜索与筛选也只作用于它们），
@@ -296,12 +293,7 @@ export const useAccountsStore = defineStore('accounts', () => {
   let saveTimer: ReturnType<typeof setTimeout> | null = null
 
   function snapshotForStore(): AccountStoreData {
-    return {
-      version: 1,
-      accounts: accounts.value,
-      activeAccountId: activeAccountId.value,
-      groups: groups.value
-    }
+    return { version: 1, accounts: accounts.value, groups: groups.value }
   }
 
   function persist(immediate = false): void {
@@ -321,11 +313,9 @@ export const useAccountsStore = defineStore('accounts', () => {
       const res = await window.api.loadAccounts()
       if (res.success && res.data) {
         accounts.value = res.data.accounts ?? []
-        activeAccountId.value = res.data.activeAccountId ?? null
         // order 是持久化的排序依据，读回来先归一，界面就能直接按数组顺序渲染
         groups.value = [...(res.data.groups ?? [])].sort((a, b) => a.order - b.order)
       }
-      await syncActiveFromIde()
     } finally {
       loading.value = false
     }
@@ -350,7 +340,14 @@ export const useAccountsStore = defineStore('accounts', () => {
     return byId.value.get(id)
   }
 
-  const activeAccount = computed(() => accounts.value.find((a) => a.isActive) ?? null)
+  /** 最近使用过的一个账号：主页展示用，只是「最近动过的那个号」，与任何外部程序无关 */
+  const recentAccount = computed(() => {
+    let best: Account | null = null
+    for (const account of accounts.value) {
+      if (!best || (account.lastUsedAt || 0) > (best.lastUsedAt || 0)) best = account
+    }
+    return best
+  })
 
   // ============ 分组 ============
 
@@ -684,7 +681,6 @@ export const useAccountsStore = defineStore('accounts', () => {
       subscription: snapshot.subscription,
       usage: snapshot.usage,
       status: 'active',
-      isActive: false,
       createdAt: now,
       lastUsedAt: now,
       lastCheckedAt: now
@@ -880,16 +876,10 @@ export const useAccountsStore = defineStore('accounts', () => {
     return changed
   }
 
-  /**
-   * 放入 / 移出回收站，返回实际变化的条数。
-   * IDE 正在使用的账号不允许放入：放进去后界面上就找不到它，IDE 却还在用。
-   */
+  /** 放入 / 移出回收站，返回实际变化的条数 */
   function setTrashed(ids: string[], trashed: boolean): { changed: number; error?: string } {
     const target = new Set(ids.filter(Boolean))
     if (!target.size) return { changed: 0 }
-    if (trashed && accounts.value.some((a) => target.has(a.id) && a.isActive)) {
-      return { changed: 0, error: 'IDE 当前正在使用的账号不能放入回收站，请先切换到其它账号' }
-    }
     const now = Date.now()
     let changed = 0
     const next = accounts.value.map((account) => {
@@ -927,7 +917,6 @@ export const useAccountsStore = defineStore('accounts', () => {
       return { removed: 0, error: res.error || '删除账号失败' }
     }
     accounts.value = res.data.accounts.accounts ?? []
-    activeAccountId.value = res.data.accounts.activeAccountId ?? null
     selectedIds.value = selectedIds.value.filter((id) => !removingSet.has(id))
     if (res.data.removed) {
       console.warn(`[Account] 已删除 ${res.data.removed} 个账号（${emails.join('、')}）`)
@@ -1122,7 +1111,6 @@ export const useAccountsStore = defineStore('accounts', () => {
         ...restRaw,
         id: raw.id || crypto.randomUUID(),
         idp,
-        isActive: false,
         usage: raw.usage ?? emptyUsage(),
         subscription: raw.subscription ?? { type: 'Free' },
         status: raw.status ?? 'unknown',
@@ -1170,7 +1158,7 @@ export const useAccountsStore = defineStore('accounts', () => {
     })
   }
 
-  async function refreshToken(id: string): Promise<{ ok: boolean; error?: string; syncedToIde?: boolean }> {
+  async function refreshToken(id: string): Promise<{ ok: boolean; error?: string }> {
     const account = get(id)
     if (!account) return { ok: false, error: '账号不存在' }
 
@@ -1186,7 +1174,7 @@ export const useAccountsStore = defineStore('accounts', () => {
       return { ok: false, error: raw }
     }
 
-    // 请求期间凭证可能已被主进程主动续期更新过，这里重新取一次，
+    // 请求期间凭证可能已被其它入口更新过，这里重新取一次，
     // 否则展开的是 await 之前的旧 credentials，会把新值覆盖回去
     const latest = get(id) ?? account
     updateAccount(id, {
@@ -1201,41 +1189,7 @@ export const useAccountsStore = defineStore('accounts', () => {
     })
     // 刚刷过就别让它继续排在池子里等第二次
     removeFromRefreshPool(keyRefreshPool, id)
-    return { ok: true, syncedToIde: res.data.syncedToIde }
-  }
-
-  /**
-   * 同步主进程主动续期后的新凭证。
-   *
-   * 主进程只对 IDE 激活账号续期，并且会把新凭证写进磁盘。渲染进程若不同步，
-   * 内存里留着的旧 refreshToken 会在下一次 persist 时覆盖磁盘（全量写入），
-   * 之后无论谁再拿它去刷新都会 invalid_grant，表现就是自动刷新时不时失败。
-   */
-  function applyRenewedCredentials(payload: ProactiveRenewalPayload): void {
-    const account = get(payload.accountId)
-    if (!account) return
-    updateAccount(payload.accountId, {
-      credentials: {
-        ...account.credentials,
-        accessToken: payload.accessToken,
-        refreshToken: payload.refreshToken,
-        expiresAt: Date.now() + payload.expiresIn * 1000
-      },
-      /*
-       * 主进程续期后没能写进 IDE，说明它已不是 IDE 激活账号，续期也随之停止调度。
-       * 这里同步清掉 isActive，让密钥检测重新接管它；
-       * 否则它会被主动续期和自动刷新同时排除，一直到 token 过期才被动刷新，
-       * 那时 refreshToken 很可能已被 IDE 换废。
-       */
-      ...(payload.syncedToIde ? {} : { isActive: false }),
-      status: 'active',
-      lastError: undefined
-    })
-    console.info(
-      payload.syncedToIde
-        ? `[ProactiveRenewal] 已同步续期后的凭证：${account.email}`
-        : `[ProactiveRenewal] 已同步凭证，但该账号不再由主动续期负责：${account.email}`
-    )
+    return { ok: true }
   }
 
   async function checkStatus(id: string): Promise<{ ok: boolean; error?: string }> {
@@ -1317,94 +1271,6 @@ export const useAccountsStore = defineStore('accounts', () => {
       )
     }
     return result
-  }
-
-  // ============ 切号 / IDE 同步 ============
-
-  async function switchTo(
-    id: string
-  ): Promise<{ ok: boolean; error?: string; result?: SwitchAccountResult }> {
-    const account = get(id)
-    if (!account) return { ok: false, error: '账号不存在' }
-
-    const res = await window.api.switchAccount({
-      accountId: id,
-      accessToken: account.credentials.accessToken,
-      refreshToken: account.credentials.refreshToken,
-      clientId: account.credentials.clientId,
-      clientSecret: account.credentials.clientSecret,
-      region: account.credentials.region,
-      startUrl: account.credentials.startUrl,
-      authMethod: authMethodOf(account.idp),
-      provider: account.idp,
-      profileArn: account.profileArn || account.credentials.profileArn
-    })
-    if (!res.success || !res.data) {
-      console.warn(`[Account] 切换到 ${account.email} 失败：${res.error}`)
-      return { ok: false, error: res.error }
-    }
-
-    const result = res.data
-    console.info(
-      `[Account] 已切换到 ${account.email}（profileArn 校验${result.verified ? '通过' : '未通过'}）`
-    )
-    accounts.value = accounts.value.map((a) =>
-      a.id === id
-        ? {
-            ...a,
-            isActive: true,
-            lastUsedAt: Date.now(),
-            status: 'active',
-            lastError: undefined,
-            // 记住主进程实测可用的 profileArn，下次切号少试一轮
-            profileArn: result.profileArn || a.profileArn,
-            credentials: {
-              ...a.credentials,
-              accessToken: result.accessToken,
-              refreshToken: result.refreshToken,
-              expiresAt: Date.now() + result.expiresIn * 1000
-            }
-          }
-        : { ...a, isActive: false }
-    )
-    activeAccountId.value = id
-    persist(true)
-    return { ok: true, result }
-  }
-
-  async function restartKiroIde(): Promise<{ ok: boolean; message: string }> {
-    const res = await window.api.restartKiroIde()
-    if (!res.success || !res.data) {
-      return { ok: false, message: res.error || '重启 Kiro IDE 失败' }
-    }
-    return { ok: res.data.started, message: res.data.message }
-  }
-
-  /** 读本地 kiro-auth-token.json，按 refreshToken 反向匹配当前激活账号 */
-  async function syncActiveFromIde(): Promise<void> {
-    const res = await window.api.getActiveKiroToken()
-    const diskRefresh = res.success ? res.data?.refreshToken : undefined
-    let matchedId: string | null = null
-    if (diskRefresh) {
-      matchedId = accounts.value.find((a) => a.credentials.refreshToken === diskRefresh)?.id ?? null
-    }
-    const changed = accounts.value.some((a) => a.isActive !== (a.id === matchedId))
-    if (!changed) {
-      activeAccountId.value = matchedId
-      return
-    }
-    accounts.value = accounts.value.map((a) => ({ ...a, isActive: a.id === matchedId }))
-    activeAccountId.value = matchedId
-    persist()
-  }
-
-  async function logoutIde(): Promise<{ ok: boolean; deleted?: number; error?: string }> {
-    const res = await window.api.logoutKiro()
-    if (!res.success) return { ok: false, error: res.error }
-    accounts.value = accounts.value.map((a) => ({ ...a, isActive: false }))
-    activeAccountId.value = null
-    persist(true)
-    return { ok: true, deleted: res.data?.deleted }
   }
 
   // ============ 自动刷新调度 ============
@@ -1520,14 +1386,8 @@ export const useAccountsStore = defineStore('accounts', () => {
    *
    * refreshToken 是轮换式的，刷一次旧值立即作废，所以刷得越勤、轮换失败与限流的
    * 面就越大，而 token 本身有 1 小时寿命，没必要每轮都换。
-   *
-   * IDE 当前激活账号在「主动续期」开启时排除在外：它每次轮换都必须同步写入 IDE 的
-   * token 文件，同步失败就会让 IDE 被登出。主进程的主动续期专门负责这个账号
-   * （剩 15 分钟时刷 + 写盘 + 失败即停止调度交给 IDE 兜底），两边同时刷同一个账号
-   * 反而会互相拿到已作废的旧 token。主动续期关闭时，这里照常覆盖它。
    */
   function scanExpiringKeys(): void {
-    const renewalOn = settingsStore.settings.proactiveRenewalEnabled
     const windowMinutes = Math.max(
       1,
       settingsStore.settings.keyRefreshWindowMinutes || DEFAULT_KEY_REFRESH_WINDOW_MINUTES
@@ -1543,10 +1403,7 @@ export const useAccountsStore = defineStore('accounts', () => {
     const useCap = capEnabled && Number.isFinite(maxPercent) && maxPercent > 0
 
     const expiring = accounts.value.filter(
-      (a) =>
-        a.status !== 'banned' &&
-        !(renewalOn && a.isActive) &&
-        a.credentials.expiresAt - Date.now() < windowMs
+      (a) => a.status !== 'banned' && a.credentials.expiresAt - Date.now() < windowMs
     )
     const soon = expiring
       .filter((a) => !useCap || !reachedUsageLimit(a, maxPercent))
@@ -1559,23 +1416,23 @@ export const useAccountsStore = defineStore('accounts', () => {
      */
     const added = enqueueRefreshPool(keyRefreshPool, soon, (id) => {
       const account = get(id)
-      if (!account || !isRefreshableId(id) || (renewalOn && account.isActive)) return null
+      if (!account || !isRefreshableId(id)) return null
       return account.credentials.expiresAt
     })
 
     const pending = keyRefreshPool.queue.length
     if (!added && !pending) {
-      // 池子也空：要么本就没有即将过期的账号，要么候选全被阈值/续期排除
+      // 池子也空：要么本就没有即将过期的账号，要么候选全被用量阈值排除
       console.info(
         capped
-          ? `[AutoRefresh] 本轮没有需要加入密钥池的账号：${capped} 个用量已达 ${maxPercent}% 或正在主动续期，已跳过`
+          ? `[AutoRefresh] 本轮没有需要加入密钥池的账号：${capped} 个用量已达 ${maxPercent}%，已跳过`
           : '[AutoRefresh] 本轮没有即将过期的账号，密钥池为空'
       )
       return
     }
     console.info(
       `[AutoRefresh] 密钥池检测完成：新入池 ${added} 个，池内待刷 ${pending} 个` +
-        (capped ? `（${capped} 个已达用量阈值或正在主动续期，未入池）` : '')
+        (capped ? `（${capped} 个已达用量阈值，未入池）` : '')
     )
   }
 
@@ -1683,7 +1540,6 @@ export const useAccountsStore = defineStore('accounts', () => {
   function stillNeededKey(id: string, stamp: number): boolean {
     const account = get(id)
     if (!account || !isRefreshableId(id)) return false
-    if (settingsStore.settings.proactiveRenewalEnabled && account.isActive) return false
     // 到期时间变了 = 入池后被刷过，token 已经新鲜，不再重复刷
     return account.credentials.expiresAt === stamp
   }
@@ -1947,7 +1803,7 @@ export const useAccountsStore = defineStore('accounts', () => {
     liveAccounts,
     trashedCount,
     trashView,
-    activeAccount,
+    recentAccount,
     selectedIds,
     loading,
     task,
@@ -1983,15 +1839,10 @@ export const useAccountsStore = defineStore('accounts', () => {
     removeAccounts,
     importItems,
     importFullData,
-    // 刷新 / 切号
+    // 刷新
     refreshToken,
     checkStatus,
-    applyRenewedCredentials,
     runBatch,
-    switchTo,
-    restartKiroIde,
-    syncActiveFromIde,
-    logoutIde,
     nextKeyRefreshAt,
     nextUsageRefreshAt,
     nextIdleUsageRefreshAt,

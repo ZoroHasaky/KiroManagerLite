@@ -63,23 +63,6 @@ export function authHeaders(accessToken: string): Record<string, string> {
   }
 }
 
-/**
- * Kiro API Key（ksk_）的请求头：在 OAuth 那套之上声明 tokentype。
- * 请求体里绝不能带 profileArn——那属于 OAuth 登录，会让 ksk_ 被 403。
- */
-export function apiKeyHeaders(apiKey: string): Record<string, string> {
-  return {
-    ...authHeaders(apiKey),
-    tokentype: 'API_KEY',
-    'x-amzn-codewhisperer-optout': 'true'
-  }
-}
-
-/** API Key 的对话端点：固定走 runtime.{region}.kiro.dev，不是 CodeWhisperer / Amazon Q */
-export function apiKeyChatEndpoint(region: string): string {
-  return `https://runtime.${region}.kiro.dev/generateAssistantResponse`
-}
-
 /** 由 Kiro 自行挑模型：这种情况不能往请求里塞 modelId */
 const AUTO_MODEL_ID = 'auto'
 
@@ -119,7 +102,7 @@ export async function arnCandidatesFor(
 ): Promise<(string | undefined)[]> {
   const out: (string | undefined)[] = []
 
-  // 账号里存着的 ARN（切号校验时实测过）最可信
+  // 账号里存着的 ARN（添加或校验时实测过）最可信
   if (identity.profileArn) pushUnique(out, identity.profileArn)
 
   if (isSocialLogin({ authMethod: identity.authMethod, provider: identity.idp })) {
@@ -214,38 +197,6 @@ function toModelInfo(m: RawModel & { modelId: string }): KiroModelInfo {
     rateUnit: m.rateUnit,
     promptCaching: m.promptCaching?.supportsPromptCaching
   }
-}
-
-/** API Key 的模型列表原始响应（不做字段映射），自检用 */
-export async function listRawApiKeyModels(apiKey: string, region: string): Promise<unknown> {
-  const res = await httpRequest(
-    `https://management.${region}.kiro.dev/List-Available-Models?origin=AI_EDITOR&maxResults=200`,
-    { method: 'GET', headers: { ...apiKeyHeaders(apiKey), accept: 'application/json' } }
-  )
-  if (!res.ok) {
-    const body = await res.text().catch(() => '')
-    throw new Error(`HTTP ${res.status}: ${body.slice(0, 200)}`)
-  }
-  return res.json<unknown>()
-}
-
-/**
- * 用 Kiro API Key 拉模型列表：走管理面 management.{region}.kiro.dev，
- * 与 Key 网关、API Key 页用的是同一个接口，返回的字段和 ListAvailableModels 一致。
- */
-export async function listApiKeyModels(apiKey: string, region: string): Promise<KiroModelInfo[]> {
-  const data = (await listRawApiKeyModels(apiKey, region)) as {
-    defaultModel?: RawModel
-    models?: RawModel[]
-  }
-  const seen = new Set<string>()
-  const out: KiroModelInfo[] = []
-  for (const m of [data.defaultModel, ...(data.models ?? [])]) {
-    if (!m?.modelId || seen.has(m.modelId)) continue
-    seen.add(m.modelId)
-    out.push(toModelInfo(m as RawModel & { modelId: string }))
-  }
-  return out
 }
 
 /** 用一个确定的 profileArn 把分页拉完 */
@@ -691,85 +642,4 @@ export async function streamKiroChat(
   }
 
   throw fail(lastError instanceof Error ? lastError : new Error('对话测试失败'))
-}
-
-// ============ API Key（ksk_）真实对话测活 ============
-
-/**
- * 使用 Kiro 官方 API Key 发起一次真实流式对话。
- * 与 OAuth 账号的 conversationState / event-stream 完全一致，但：
- * - 端点固定为 runtime.{region}.kiro.dev
- * - 认证增加 tokentype: API_KEY
- * - 请求体绝不携带 profileArn
- */
-export async function streamApiKeyChat(
-  apiKey: string,
-  region: string,
-  input: {
-    modelId: string
-    message: string
-    additionalModelRequestFields?: Record<string, unknown>
-  },
-  callbacks: ChatStreamCallbacks,
-  signal?: AbortSignal
-): Promise<ChatStreamResult> {
-  if (!apiKey.startsWith('ksk_')) throw new Error('API Key 格式无效')
-  const chatInput: ChatTestInput = {
-    accountId: 'api-key',
-    accessToken: '',
-    modelId: input.modelId,
-    message: input.message,
-    region,
-    additionalModelRequestFields: input.additionalModelRequestFields
-  }
-  const body = JSON.stringify(buildPayload(chatInput, undefined))
-  const url = apiKeyChatEndpoint(region)
-  const startedAt = Date.now()
-  // API Key 只有一个端点、不带 profileArn，trace 里就这一次
-  const trace: ChatRawAttempt[] = []
-  const recorder = new RawRecorder(trace, url)
-
-  try {
-    const res = await httpStream(url, {
-      method: 'POST',
-      headers: apiKeyHeaders(apiKey),
-      body,
-      signal
-    })
-    recorder.response(res.status, res.headers)
-
-    if (!res.ok || !res.body) {
-      const raw = await res.text().catch(() => '')
-      recorder.body(raw)
-      throw new Error(`HTTP ${res.status}: ${raw.slice(0, 300) || '没有响应体'}`)
-    }
-
-    const read = await readChatStream(res.body, recorder, startedAt, callbacks.onDelta)
-
-    if (!read.text) {
-      throw new Error(
-        read.thinkingChars
-          ? `只返回了 ${read.thinkingChars} 字思考内容，没有正文`
-          : '接口返回了空响应，Key 可能没有该模型的调用权限或额度已用尽'
-      )
-    }
-
-    recorder.finish('success')
-    return {
-      endpoint: new URL(url).host,
-      text: read.text,
-      firstByteMs: read.firstByteMs,
-      totalMs: Date.now() - startedAt,
-      modelId: read.modelId,
-      thinkingChars: read.thinkingChars || undefined,
-      raw: { attempts: trace }
-    }
-  } catch (error) {
-    if (signal?.aborted) {
-      recorder.finish('cancelled', '已取消')
-      throw new ChatTestError('已取消', { attempts: trace })
-    }
-    recorder.finish('error', errorMessage(error))
-    throw new ChatTestError(errorMessage(error), { attempts: trace })
-  }
 }

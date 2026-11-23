@@ -1,4 +1,4 @@
-// 模型选择相关的公用形状与逻辑：账号测活与 API Key 测活共用
+// 模型选择相关的公用形状与逻辑：账号测活与模型下拉共用
 import { formatRate } from '@/utils/format'
 import type { ModelEffort } from '@shared/modelSchema'
 

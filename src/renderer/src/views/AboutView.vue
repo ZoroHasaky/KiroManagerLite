@@ -39,22 +39,17 @@ async function checkUpdate(): Promise<void> {
 
 /** 关于页展示的功能清单，按应用的模块顺序排列，与 README 的功能特性保持一致 */
 const features = [
-  { name: '多账号管理', desc: 'Google / GitHub / Builder ID / Enterprise SSO 在线登录、OIDC 凭证、读取本机登录态五种添加方式，支持搜索、多维筛选、排序与批量操作' },
-  { name: '分组与展示', desc: '账号与 API Key 共用一套自定义分组，卡片、卡片紧凑、列表三种形态可切换并记住选择' },
-  { name: '一键切号', desc: '把账号凭证写入 Kiro IDE，落盘前实测 profileArn，可一键重启 IDE 生效' },
-  { name: '刷新与续期', desc: 'Token 与用量各自定时刷新，IDE 当前账号的 Token 即将过期前主动续期写盘' },
+  { name: '多账号管理', desc: 'Google / GitHub / Builder ID / Enterprise SSO 在线登录、OIDC 凭证、读取本机登录态，支持搜索、多维筛选、分组与批量操作' },
+  { name: '账号阶段', desc: '未使用 / 待支付 / 已订阅 / 已出售 / 已闲置五个阶段自动推导，不用手工维护分组' },
+  { name: '刷新与检测', desc: '密钥与用量各自定时检测并分批刷新，两个待刷新池独立控制间隔与每批数量，避免触发上游限流' },
   { name: '流式测活', desc: '真实对话测活，模型可搜索、二级可选推理档位，可查看官方完整原始返回' },
   { name: '订阅与官网', desc: '订阅状态、可开通档位与 Stripe 账单页，可批量生成订阅链接；内置私密浏览器免登录进 Kiro 官网后台' },
-  { name: '账号 API Key', desc: '用账号凭证向 Kiro 申请 API Key 并列出已创建的 Key' },
-  { name: 'API Key 管理', desc: '管理 ksk_ 开头的 Kiro API Key，按区域同步额度、测活、查看积分历史' },
-  { name: '本地反代', desc: '账号池转成 OpenAI / Anthropic / Gemini 兼容接口，轮询选号、重试换号、托管联网搜索' },
-  { name: '一键接入客户端', desc: 'Claude Code、Codex、Cursor、VS Code 等 12 个命令行与桌面客户端一键写入，写入前备份、可一键还原' },
-  { name: '本地网关', desc: '把 Kiro IDE 的 AI 请求接管到指定 API Key，运行中可随时换 Key，按真实请求统计' },
+  { name: '订阅管理', desc: '一次性预约与可停止的批量生成支付链接，二维码本地生成，切换 Free 走 Stripe 门户' },
   { name: '用量与历史', desc: '记录每次刷新的积分变化，趋势曲线、明细表与 Excel 导出' },
   { name: '导入导出', desc: '卡密、JSON、CSV、TXT 互通，可批量导入多个文件、分割导出为压缩包' },
-  { name: '常用工具', desc: '机器码重置与恢复、出口 IP 与网站连通性检测、自动同意 AI 操作' },
+  { name: '常用工具', desc: '出口 IP 与网站连通性检测，走应用自身的代理设置' },
   { name: '系统日志', desc: '主进程与界面日志同一时间线，按级别、分类、关键字与时间筛选并可导出' },
-  { name: '隐私打码', desc: '一键遮住邮箱、昵称、API Key 与备注，截图录屏更安心' },
+  { name: '隐私打码', desc: '一键遮住邮箱与备注，截图录屏更安心' },
   { name: '个性化设置', desc: '主题风格与主题色、左右 / 上下布局、控件尺寸、HTTP 代理、内置浏览器地区、定时备份与初始化' },
   { name: '桌面端体验', desc: '系统托盘常驻、关闭行为可配、自定义协议唤起、单实例锁' }
 ]
@@ -98,7 +93,7 @@ const features = [
         </span>
       </template>
       <p class="intro-text">
-        Kiro 多账号一键切换 · 本地反代与客户端一键接入 · 自定义分组与三种展示形态 · 订阅开通与账单管理 · 账号 API Key 管理 · 本地网关与真实调用统计 · 机器码重置与网络检测 · 自动刷新与流式测活 · 内置私密浏览器 · 托盘常驻
+        多账号集中管理 · 阶段自动推导 · 密钥与用量分批刷新 · 订阅开通与账单管理 · 支付链接与二维码 · 流式测活 · 导入导出 · 内置私密浏览器 · 托盘常驻
       </p>
       <p class="intro-text">
         本应用使用 Electron + Vue 3 + TypeScript 开发，支持 Windows、macOS 和 Linux 平台。

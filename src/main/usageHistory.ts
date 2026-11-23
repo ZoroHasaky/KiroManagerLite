@@ -157,21 +157,12 @@ export function clearUsageHistory(accountId: string): number {
   return count
 }
 
-/** 删除已经不存在的 API Key 留下的用量历史。 */
-export function pruneKeyUsageHistory(keepKeyIds: string[]): number {
-  const keep = new Set(keepKeyIds.map((id) => `key:${id}`))
-  const all = history()
-  let removed = 0
-  for (const id of Object.keys(all)) {
-    if (!id.startsWith('key:') || keep.has(id)) continue
-    delete all[id]
-    removed++
-  }
-  if (removed) flushUsageHistory()
-  return removed
-}
-
-/** 删除已经不存在的账号留下的历史；API Key 使用独立 key: 命名空间，由 Key 删除流程清理。 */
+/**
+ * 删除已经不存在的账号留下的历史。
+ *
+ * key: 前缀是旧版本 API Key 页留下的命名空间，功能已移除，
+ * 这里连它们一起清掉，用户升级后那份数据不会永远躺在磁盘上。
+ */
 export function pruneUsageHistory(keepAccountIds: string[]): number {
   const keep = new Set(keepAccountIds)
   const all = history()

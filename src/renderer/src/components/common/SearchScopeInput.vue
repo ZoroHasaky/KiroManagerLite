@@ -4,7 +4,7 @@
  *
  * 默认是「智能搜索」—— 几个字段一起找，和改造前的搜索框行为一致；
  * 选了具体字段就只在那个字段里找，便于精确定位（比如只按备注筛）。
- * 账户管理与 API Key 管理共用这一份，字段选项由调用方给。
+ * 字段选项由调用方给。
  */
 import { computed } from 'vue'
 import { SearchOutlined } from '@ant-design/icons-vue'

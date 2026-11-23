@@ -23,20 +23,13 @@ import {
   isAppProtocolUrl,
   registerAppProtocol
 } from './appProtocol'
-import {
-  clearProactiveRenewal,
-  initProactiveRenewal,
-  scheduleForActiveAccount
-} from './proactiveRenewal'
 import { flushUsageHistory } from './usageHistory'
-import { flushGatewayHistory } from './gatewayHistory'
 import { initLogger, installConsoleBridge, log, shutdownLogger } from './logger'
 import { sendToRenderer } from './utils'
-import { initializeKeyService, shutdownKeyServiceSync } from './keyService'
-import { initProxyServer, shutdownProxySync } from './proxyServer'
+import { runLegacyCleanup } from './legacyCleanup'
 import { applyThemeMode, windowBackground } from './appearance'
 import { initBackupScheduler, stopBackupScheduler } from './backupScheduler'
-import { activePackRoot, currentVersion, sanityCheckActivePack } from './packManager'
+import { activePackRoot, sanityCheckActivePack } from './packManager'
 
 /*
  * 按设置里的地区指定 Chromium 区域。
@@ -357,15 +350,13 @@ app.whenReady().then(() => {
   applyRuntimeSettings(getSettings())
   // 授权回调页的「返回应用」按钮靠这个回调把主窗口带到前台
   registerLoginFocusHandler(focusWindow)
-  initProactiveRenewal(() => mainWindow)
   registerIpc(() => mainWindow)
-  // 恢复上次的 API Key 接管；状态变化主动推送给渲染进程。
-  void initializeKeyService((status) => sendToRenderer(mainWindow, 'key-gateway:changed', status))
-  // 本地反代：状态与请求日志主动推给界面；配置里开了自动启动就直接起服务
-  initProxyServer(
-    (event, payload) => sendToRenderer(mainWindow, `proxy:${event}`, payload),
-    currentVersion()
-  )
+  /*
+   * 还原旧版本（≤1.2.5）写在用户机器上的外部配置：IDE 端点、桌面 agent 配置、KIRO_API_KEY。
+   * 那些功能已经移除，留下指向本地端口的配置只会让用户的 IDE 一直请求失败。
+   * 没有遗留记录时什么也不做，因此放在这里不增加启动耗时。
+   */
+  void runLegacyCleanup()
   // macOS 顶部菜单栏（中文菜单 + 页面导航），其他平台维持默认
   setupAppMenu({ focusWindow, getWindow: () => mainWindow })
   createWindow()
@@ -374,8 +365,6 @@ app.whenReady().then(() => {
   const launchUrl = findAppProtocolUrl(process.argv)
   if (launchUrl) handleAppProtocolUrl(launchUrl, focusWindow, () => mainWindow)
 
-  // 按上次持久化的激活账号，启动即恢复主动续期调度（若功能已开启）
-  scheduleForActiveAccount()
   // 备份计划：开了就按周期静默备份；启动时若已过点会立即补一次
   initBackupScheduler((status) => sendToRenderer(mainWindow, 'backup:status', status))
 
@@ -415,13 +404,8 @@ app.on('will-quit', () => {
   cancelLogin()
   shutdownLoginServers()
   unregisterProtocol()
-  clearProactiveRenewal('app quitting')
   stopBackupScheduler()
   flushUsageHistory()
-  flushGatewayHistory()
-  // 同步还原 Kiro IDE 端点后再退出，避免 IDE 指向已停止的本地网关。
-  shutdownKeyServiceSync()
-  shutdownProxySync()
   // 内置浏览器是 BaseWindow，不受主窗口关闭影响，得显式收掉
   closePortalWindow()
   // 官网账号窗口是外部 Chrome，同样不随主窗口关闭，退出时要一并杀掉

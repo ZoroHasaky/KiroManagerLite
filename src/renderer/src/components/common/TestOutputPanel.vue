@@ -2,7 +2,7 @@
 /**
  * 测活的「响应结果」面板：标题 + 流式回复，测完（成功、失败、中止都算）右上角出现「查看完整响应」，
  * 点开能看到每一次向 Kiro 官方发出的请求拿到的原样返回（状态、响应头、响应体或逐帧事件）。
- * 账号测活与 API Key 测活共用。
+ * 账号测活的原始返回展示。
  */
 import { computed, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'

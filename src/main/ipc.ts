@@ -8,18 +8,8 @@ import {
   type IpcMainInvokeEvent
 } from 'electron'
 import { readFile, writeFile } from 'fs/promises'
-import { existsSync } from 'fs'
-import { dirname, extname, join } from 'path'
-import {
-  checkAccountStatus,
-  forgetSwitchedAccounts,
-  refreshAccountToken,
-  setLastSwitchedAccountId,
-  switchAccount,
-  syncCredentialsToIde,
-  verifyCredentials
-} from './accountService'
-import { createAccountApiKey, deleteAccountApiKey, listAccountApiKeys } from './kiroApiKey'
+import { extname, join } from 'path'
+import { checkAccountStatus, refreshAccountToken, verifyCredentials } from './accountService'
 import { openInAppUrl } from './kiroPortal'
 import { openAccountPortal } from './externalPortal'
 import { createSubscriptionCheckout, getSubscriptionEntry, listSubscriptionPlans } from './kiroSubscription'
@@ -31,9 +21,8 @@ import {
 import { generateBillingAddress, isValidProvince, listProvinces } from './payment/addressGen'
 import { switchSubscriptionToFree } from './subscriptionDowngrade'
 import { openSubscriptionPortal } from './subscriptionPortal'
-import { clearKiroSsoCache, readKiroAuthToken, readLocalKiroCredentials, ssoCacheFile } from './kiroAuth'
-import { restartKiroIde } from './kiroProcess'
-import { chatTraceOf, listKiroModels, streamApiKeyChat, streamKiroChat } from './kiroChat'
+import { readLocalKiroCredentials } from './kiroAuth'
+import { chatTraceOf, listKiroModels, streamKiroChat } from './kiroChat'
 import {
   cancelLogin,
   shutdownLoginServers,
@@ -46,49 +35,13 @@ import {
   startSocialLogin
 } from './onlineLogin'
 import { isHttpUrl, openUrl } from './browser'
-import { detectKiroCapability } from './kiroCapability'
-import { setGatewayRetryPolicy } from './keyGateway'
-import { getGatewayStats, resetGatewayStats } from './gatewayStats'
-import { getPoints } from './gatewayHistory'
 import { setTraySnapshot, setTrayEnabled } from './tray'
-import {
-  clearProactiveRenewal,
-  scheduleForActiveAccount,
-  scheduleProactiveRenewal
-} from './proactiveRenewal'
 import { setUsageApiType } from './kiroApi'
 import { setInAppLocale } from './kiroPortal'
 import { setProxyConfig } from './net'
 import { applyThemeMode } from './appearance'
 import { checkForUpdate } from './updater'
-import {
-  disableShellAutoApprove,
-  enableShellAutoApprove,
-  getShellAutoApproveStatus,
-  shellApproveTargetPath
-} from './kiroPermissions'
-import {
-  getMachineIdStatus,
-  machineIdLocationFile,
-  resetMachineId,
-  restoreMachineId
-} from './kiroMachineId'
 import { getIpInfo, testSite } from './networkCheck'
-import {
-  applyProxyConfig,
-  clearProxyLogs,
-  clearProxyUsage,
-  proxyLogs,
-  proxyModels,
-  proxyStatus,
-  proxyUsage,
-  refreshProxyModels,
-  resetProxyStats,
-  shutdownProxySync,
-  startProxy,
-  stopProxy,
-  tryProxyEndpoint
-} from './proxyServer'
 import {
   applyBackup,
   buildBackup,
@@ -104,26 +57,6 @@ import {
   runBackupNow,
   stopBackupScheduler
 } from './backupScheduler'
-import {
-  createProxyKey,
-  deleteProxyKey,
-  generateProxyKey,
-  listProxyKeys,
-  proxyKeyUsage,
-  resetProxyKeyUsage,
-  setDefaultProxyKey,
-  updateProxyKey
-} from './proxyKeys'
-import {
-  applyProxyClient,
-  displayFiles,
-  openProxyClient,
-  proxyClientStates,
-  restoreProxyClient,
-  syncCodexCatalogFile
-} from './proxyClients'
-import { clearCustomPath, pickDialogOptions, resetInstallCache, saveCustomPath } from './proxyClientInstall'
-import { FALLBACK_MODEL_IDS } from '../shared/proxyModels'
 import { clearLogs, exportLogs, getLogDir, log, queryLogs } from './logger'
 import {
   activatePack,
@@ -136,46 +69,16 @@ import {
   rollbackPack
 } from './packManager'
 import { sendToRenderer } from './utils'
-import { kiroCliEnvStatus, kiroCliEnvWritten, removeKiroCliEnv, writeKiroCliEnv } from './kiroCliEnv'
 import { buildXlsx, buildZip } from './xlsxWriter'
-import {
-  addKey,
-  configureGateway,
-  deleteKey,
-  disableGateway,
-  shutdownKeyServiceSync,
-  enableGateway,
-  getGatewayStatus,
-  importKeys,
-  inspectGatewayConflict,
-  listKeyModels,
-  loadKeys,
-  recordChatTestResult,
-  selectKey,
-  syncAllKeys,
-  setKeyGroups,
-  setKeysGroup,
-  setKeysTrashed,
-  setKeysNote,
-  syncKey,
-  testKey,
-  updateKey,
-  updateKeyRegion
-} from './keyService'
 import { errorMessage } from '../shared/errors'
 import {
   deleteAccountData,
   viewAccountData,
   getBackupDir,
   ensureBackupDir,
-  getKeyData,
-  getProxyConfig,
   getSettings,
-  getShellApproveBackup,
-  proxyClientBackupTargets,
   getStorePath,
   flushStore,
-  saveProxyConfig,
   setAccountData,
   setSettings
 } from './store'
@@ -189,21 +92,13 @@ import {
 import { DEFAULT_REGION } from '../shared/regions'
 import type {
   Account,
-  AccountGroup,
   AccountStoreData,
   AccountUsage,
   AppSettings,
-  ApiKeyChatTestInput,
   ChatTestInput,
   IpcResult,
-  KiroModelInfo,
   LogQuery,
-  MachineIdField,
-  ProxyClientTarget,
-  ProxyConfig,
-  ShellAutoApproveTarget,
   SiteTestId,
-  SwitchAccountInput,
   TraySnapshot,
   VerifyCredentialsInput,
   ExportBundle,
@@ -241,12 +136,6 @@ export function applyRuntimeSettings(settings: AppSettings): void {
   setUsageApiType(settings.usageApiType)
   setProxyConfig(settings.proxyEnabled, settings.proxyUrl)
   setInAppLocale(settings.portalLocale)
-  setGatewayRetryPolicy(
-    settings.gatewayAutoRetryThrottle,
-    settings.gatewayRetryStatuses,
-    settings.gatewayRetryMaxAttempts,
-    settings.gatewayRetryDelayMs
-  )
 }
 
 export function registerIpc(getWindow: () => BrowserWindow | null): void {
@@ -265,9 +154,6 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     const result = await deleteAccountData(Array.isArray(ids) ? ids : [])
     if (result.removed) {
       pruneUsageHistory(result.accounts.accounts.map((account) => account.id))
-      forgetSwitchedAccounts(ids)
-      // 删除的若是 IDE 激活账号，立即清掉旧续期 timer；否则按剩余激活账号重新对齐。
-      scheduleForActiveAccount()
     }
     return ok(result)
   })
@@ -292,23 +178,9 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     ok(await verifyCredentials(input))
   )
 
-  handle('accounts:refresh-token', async (_e, account: Account) => {
-    const result = await refreshAccountToken(account)
-    // 刷新的正是 IDE 当前激活账号时，基于新 expiresAt 重排主动续期
-    if (result.syncedToIde) {
-      scheduleProactiveRenewal(account.id, Date.now() + result.expiresIn * 1000)
-    }
-    return ok(result)
-  })
-
-  handle('accounts:create-api-key', async (_e, account: Account, label: string) => {
-    const result = await createAccountApiKey(account, label)
-    // 生成过程中若刷新过凭证，按新的到期时间重排主动续期
-    if (result.refreshed?.syncedToIde) {
-      scheduleProactiveRenewal(account.id, Date.now() + result.refreshed.expiresIn * 1000)
-    }
-    return ok(result)
-  })
+  handle('accounts:refresh-token', async (_e, account: Account) =>
+    ok(await refreshAccountToken(account))
+  )
 
   handle('accounts:open-portal', async (_e, account: Account) =>
     ok(await openAccountPortal(account))
@@ -365,42 +237,10 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     ok(await switchSubscriptionToFree(account))
   )
 
-  handle('accounts:list-api-keys', async (_e, account: Account) => {
-    const result = await listAccountApiKeys(account)
-    if (result.refreshed?.syncedToIde) {
-      scheduleProactiveRenewal(account.id, Date.now() + result.refreshed.expiresIn * 1000)
-    }
-    return ok(result)
-  })
-
-  handle('accounts:delete-api-key', async (_e, account: Account, keyId: string) => {
-    const result = await deleteAccountApiKey(account, keyId)
-    if (result.refreshed?.syncedToIde) {
-      scheduleProactiveRenewal(account.id, Date.now() + result.refreshed.expiresIn * 1000)
-    }
-    return ok(result)
-  })
-
   // 封禁需要额外回传 banned 标记，单独注册以保留该字段
   ipcMain.handle('accounts:check-status', async (_e, account: Account) => {
     try {
       const snapshot = await checkAccountStatus(account)
-      /*
-       * accessToken 过期时 checkAccountStatus 会顺手刷新一次，refreshToken 随之轮换。
-       * 这种轮换必须同步给 IDE 并重排主动续期，否则 IDE 手里的 refreshToken 已作废，
-       * 主动续期也会因为磁盘值对不上而判定「不是激活账号」并停止调度。
-       */
-      const { accessToken, refreshToken } = snapshot
-      if (accessToken && refreshToken && refreshToken !== account.credentials.refreshToken) {
-        // 接口没给 expiresIn 时按 1 小时兜底，与 accountService 的默认值一致
-        const expiresIn = snapshot.expiresIn ?? 3600
-        const { syncedToIde } = await syncCredentialsToIde(
-          account,
-          { accessToken, refreshToken, expiresIn },
-          account.credentials.refreshToken
-        )
-        if (syncedToIde) scheduleProactiveRenewal(account.id, Date.now() + expiresIn * 1000)
-      }
       return ok(snapshot)
     } catch (e) {
       const banned = (e as { isBanned?: boolean }).isBanned === true
@@ -408,92 +248,14 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     }
   })
 
-  // ============ Kiro IDE 交互 ============
-  handle('kiro:read-local-credentials', async () => {
-    const result = await readLocalKiroCredentials()
-    if ('error' in result) return fail(result.error)
-    return ok(result)
-  })
-
-  handle('kiro:get-active-token', async () => {
-    const token = await readKiroAuthToken()
-    if (!token) return fail('本地没有 Kiro 登录状态')
-    return ok({
-      refreshToken: token.refreshToken,
-      accessToken: token.accessToken,
-      expiresAt: token.expiresAt,
-      authMethod: token.authMethod,
-      provider: token.provider
-    })
-  })
-
-  handle('kiro:switch', async (_e, input: SwitchAccountInput) => {
-    const result = await switchAccount(input)
-    // 新账号成为 IDE 激活账号，按其 token expiresAt 重排主动续期
-    scheduleProactiveRenewal(input.accountId, Date.now() + result.expiresIn * 1000)
-    return ok(result)
-  })
-
-  handle('kiro:logout', async () => {
-    setLastSwitchedAccountId(null)
-    clearProactiveRenewal('logout ide')
-    return ok({ deleted: await clearKiroSsoCache() })
-  })
-
-  handle('kiro:restart-ide', async () => ok(await restartKiroIde()))
-
-  // ============ Kiro API Key 管理 / 本地网关 ============
-  handle('keys:load', () => ok(loadKeys()))
-  handle('keys:add', (_e, key: string, note?: string, region?: string) =>
-    ok(addKey(key, note, region))
-  )
-  handle('keys:import', (_e, text: string, region?: string) => ok(importKeys(text, region)))
-  handle('keys:update', (_e, id: string, note: string) => ok(updateKey(id, note)))
-  handle('keys:set-note', (_e, ids: string[], note: string) => ok(setKeysNote(ids, note)))
-  handle('keys:set-groups', (_e, groups: AccountGroup[]) => ok(setKeyGroups(groups)))
-  handle('keys:set-group', (_e, ids: string[], groupIds: string[] | string | null) =>
-    ok(setKeysGroup(ids, groupIds))
-  )
-  handle('keys:set-trashed', (_e, ids: string[], trashed: boolean) =>
-    ok(setKeysTrashed(ids, trashed === true))
-  )
-  handle('keys:set-region', async (_e, id: string, region: string) =>
-    ok(await updateKeyRegion(id, region))
-  )
-  handle('keys:delete', (_e, id: string) => ok(deleteKey(id)))
-  handle('keys:select', async (_e, id: string) => ok(await selectKey(id)))
-  handle('keys:test', async (_e, id: string) => ok(await testKey(id)))
-  handle('keys:models', async (_e, id: string) => ok(await listKeyModels(id)))
-  handle('keys:sync', async (_e, id: string) => ok(await syncKey(id)))
-  handle('keys:sync-all', async (_e, concurrency?: number) => ok(await syncAllKeys(concurrency)))
-
-  handle('key-gateway:status', async () => ok(await getGatewayStatus()))
-  handle('key-gateway:capability', async () => ok(await detectKiroCapability()))
-  handle('key-gateway:stats', () => ok(getGatewayStats()))
-  handle('key-gateway:stats-reset', (_e, keyId?: string) => {
-    resetGatewayStats(keyId)
-    return ok(getGatewayStats())
-  })
-  /** 某个 Key 的调用历史（按分钟聚合），用于画请求 / 成功率 / 积分曲线 */
-  handle('key-gateway:history', (_e, keyId: string) => ok(getPoints(keyId)))
-  handle('key-gateway:inspect-conflict', async () => ok(await inspectGatewayConflict()))
-  handle('key-gateway:enable', async (_e, keyId?: string, force?: boolean) =>
-    ok(await enableGateway(keyId, { force: !!force }))
-  )
-  handle('key-gateway:disable', async () => ok(await disableGateway()))
-  handle('key-gateway:configure', async (_e, input: { ports?: { krs: number; cps: number } }) =>
-    ok(await configureGateway(input))
-  )
-
   // ============ 账号测活（真实对话）============
 
   handle('kiro:list-models', async (_e, input: Parameters<typeof listKiroModels>[0]) =>
     ok(await listKiroModels(input))
   )
 
-  // 一个请求一个 AbortController，账号与 API Key 测活分别管理，避免 requestId 相同时相互取消。
+  // 一个请求一个 AbortController，避免 requestId 相同时相互取消
   const accountChatAborters = new Map<string, AbortController>()
-  const keyChatAborters = new Map<string, AbortController>()
 
   handle('kiro:chat-test', async (event, requestId: string, input: ChatTestInput) => {
     const controller = new AbortController()
@@ -522,50 +284,6 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
 
   handle('kiro:chat-cancel', (_e, requestId: string) => {
     accountChatAborters.get(requestId)?.abort(new Error('用户取消'))
-    return ok()
-  })
-
-  // API Key 在线对话测活：凭证只在主进程读取，不下发到渲染层。
-  handle('keys:chat-test', async (event, requestId: string, input: ApiKeyChatTestInput) => {
-    const data = loadKeys()
-    const entry = data.keys.find((key) => key.id === input.keyId)
-    if (!entry) return fail('未找到该 API Key')
-    const controller = new AbortController()
-    keyChatAborters.set(requestId, controller)
-    try {
-      const result = await streamApiKeyChat(
-        entry.key,
-        entry.region,
-        {
-          modelId: input.modelId,
-          message: input.message,
-          additionalModelRequestFields: input.additionalModelRequestFields
-        },
-        {
-          onDelta: (delta) => {
-            if (!event.sender.isDestroyed()) {
-              event.sender.send('keys:chat-chunk', { requestId, delta })
-            }
-          }
-        },
-        controller.signal
-      )
-      // 真实对话是唯一能查出封禁/失效的途径，结论必须落库，否则卡片仍显示「正常」
-      recordChatTestResult(entry.id, undefined)
-      return ok(result)
-    } catch (error) {
-      // 用户主动中止不构成测活结论，不能据此把 Key 标成异常
-      if (!controller.signal.aborted) {
-        recordChatTestResult(entry.id, errorMessage(error))
-      }
-      return { ...fail(error), raw: chatTraceOf(error) }
-    } finally {
-      if (keyChatAborters.get(requestId) === controller) keyChatAborters.delete(requestId)
-    }
-  })
-
-  handle('keys:chat-cancel', (_e, requestId: string) => {
-    keyChatAborters.get(requestId)?.abort(new Error('用户取消'))
     return ok()
   })
 
@@ -686,11 +404,6 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     applyRuntimeSettings(merged)
     // 托盘开关变化时动态启用 / 关闭托盘图标
     if (patch.trayEnabled !== undefined) setTrayEnabled(patch.trayEnabled)
-    // 主动续期开关变化时立即生效：开启则按当前激活账号调度，关闭则清除
-    if (patch.proactiveRenewalEnabled !== undefined) {
-      if (patch.proactiveRenewalEnabled) scheduleForActiveAccount()
-      else clearProactiveRenewal('disabled by user')
-    }
     // 备份计划的开关或周期变了就重新排程；只改保留份数不用（下次备份时按新值清理）
     if (patch.backupEnabled !== undefined || patch.backupCycle !== undefined) onBackupSettingsChanged()
     return ok(merged)
@@ -779,210 +492,9 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     return ok(packStatus())
   })
 
-  // ============ 常用工具：Kiro Agent 权限 ============
-  handle('tools:shell-approve-status', async () => ok(await getShellAutoApproveStatus()))
-  handle('tools:shell-approve-enable', async () => ok(await enableShellAutoApprove()))
-  handle('tools:shell-approve-disable', async () => ok(await disableShellAutoApprove()))
-
-  /**
-   * 在文件管理器里定位配置文件。
-   * 渲染层只能传机制标识，路径一律由主进程自行解析，避免任意路径被打开。
-   */
-  handle('tools:shell-approve-reveal', async (_e, kind: ShellAutoApproveTarget['kind']) => {
-    const target = shellApproveTargetPath(kind)
-    // 文件还不存在时退一步打开它所在目录，至少让用户看到位置
-    if (existsSync(target)) shell.showItemInFolder(target)
-    else await shell.openPath(dirname(target))
-    return ok()
-  })
-
-  // ============ 常用工具：机器码 ============
-  handle('tools:machine-id-status', async () => ok(await getMachineIdStatus()))
-  handle('tools:machine-id-reset', async () => ok(await resetMachineId()))
-  handle('tools:machine-id-restore', async () => ok(await restoreMachineId()))
-  /** 同上：只接受字段名，路径由主进程解析 */
-  handle('tools:machine-id-reveal', async (_e, field: MachineIdField) => {
-    const target = machineIdLocationFile(field)
-    if (!target) return fail(new Error('该项存放在注册表中，没有对应的文件'))
-    if (existsSync(target)) shell.showItemInFolder(target)
-    else await shell.openPath(dirname(target))
-    return ok()
-  })
-
-  /** 切号结果里的 Token 文件 / 客户端注册：只接受 SSO 缓存目录下的文件 */
-  handle('accounts:reveal-sso-file', async (_e, target: string) => {
-    const file = ssoCacheFile(target)
-    if (!file) return fail(new Error('只能定位 Kiro SSO 缓存目录下的凭证文件'))
-    if (existsSync(file)) shell.showItemInFolder(file)
-    else await shell.openPath(dirname(file))
-    return ok()
-  })
-
   // ============ 常用工具：网络检测 ============
   handle('tools:ip-info', async () => ok(await getIpInfo()))
   handle('tools:site-test', async (_e, id: SiteTestId) => ok(await testSite(id)))
-
-  // ============ 本地反代 ============
-  handle('proxy:state', () =>
-    ok({
-      config: getProxyConfig(),
-      status: proxyStatus(),
-      logs: proxyLogs(),
-      usage: proxyUsage(),
-      models: proxyModels()
-    })
-  )
-  handle('proxy:save-config', async (_e, patch: Partial<ProxyConfig>) => {
-    const merged = saveProxyConfig(patch)
-    // 端口 / 监听范围变了要重启才生效，applyProxyConfig 自己判断
-    const status = await applyProxyConfig(merged)
-    return ok({ config: merged, status })
-  })
-  handle('proxy:start', async () => ok(await startProxy()))
-  handle('proxy:stop', () => ok(stopProxy()))
-  handle('proxy:clear-logs', () => {
-    clearProxyLogs()
-    return ok()
-  })
-  handle('proxy:reset-stats', () => {
-    resetProxyStats()
-    clearProxyUsage()
-    return ok(proxyStatus())
-  })
-
-  /** API 端点弹窗的模拟请求：由主进程对本机反代发真实请求 */
-  handle(
-    'proxy:try-endpoint',
-    async (_e, input: { method: 'GET' | 'POST'; path: string; body?: string }) =>
-      ok(await tryProxyEndpoint(input))
-  )
-
-  // ---- 多 API Key ----
-  handle('proxy:keys', () => ok(listProxyKeys()))
-  handle('proxy:key-create', (_e, input: { name?: string; creditLimit?: number }) =>
-    ok(createProxyKey(input ?? {}))
-  )
-  handle(
-    'proxy:key-update',
-    (_e, id: string, patch: { name?: string; creditLimit?: number; enabled?: boolean }) => {
-      updateProxyKey(id, patch ?? {})
-      return ok(listProxyKeys())
-    }
-  )
-  handle('proxy:key-delete', (_e, id: string) => {
-    deleteProxyKey(id)
-    return ok(listProxyKeys())
-  })
-  /** 设为默认：会改 proxyConfig.apiKey，要同步给正在运行的反代，并把新配置回给界面 */
-  handle('proxy:key-set-default', async (_e, id: string) => {
-    setDefaultProxyKey(id)
-    const config = getProxyConfig()
-    const status = await applyProxyConfig(config)
-    return ok({ keys: listProxyKeys(), config, status })
-  })
-  handle('proxy:key-usage', (_e, id: string) => ok(proxyKeyUsage(id)))
-  handle('proxy:key-reset-usage', (_e, id: string) => {
-    resetProxyKeyUsage(id)
-    return ok(listProxyKeys())
-  })
-  /**
-   * 重新生成默认 Key。
-   * 放主进程生成：随机源用 node 的 crypto，前缀规则也只在 proxyKeys 一处。
-   * 旧 Key 的用量挂在固定的 default id 上，换 Key 不清统计。
-   */
-  handle('proxy:regenerate-default-key', async () => {
-    const merged = saveProxyConfig({ apiKey: generateProxyKey() })
-    const status = await applyProxyConfig(merged)
-    return ok({ config: merged, status })
-  })
-
-  /** 写入 / 还原桌面 agent 配置；反代地址、Key、模型列表一律由主进程按当前配置算 */
-  const clientInfo = (): {
-    baseUrl: string
-    apiKey: string
-    model: string
-    effort: string
-    models: KiroModelInfo[]
-  } => {
-    const cfg = getProxyConfig()
-    return {
-      baseUrl: `http://127.0.0.1:${cfg.port}`,
-      apiKey: cfg.apiKey,
-      model: cfg.defaultModel,
-      effort: cfg.defaultEffort,
-      // 还没拉过模型时用兜底表，至少保证写得进去
-      models: proxyModels()?.models ?? FALLBACK_MODEL_IDS.map((modelId) => ({ modelId }))
-    }
-  }
-
-  /** 用当前选中的账号重新拉模型列表，并同步 Codex 目录文件 */
-  handle('proxy:refresh-models', async () => {
-    const cache = await refreshProxyModels()
-    const cfg = getProxyConfig()
-    await syncCodexCatalogFile(cache.models, { model: cfg.defaultModel, effort: cfg.defaultEffort })
-    return ok(cache)
-  })
-  handle('proxy:client-states', async (_e, fresh?: boolean) => {
-    // 用户刚装完点「重新检测」：Windows 的注册表查询有 30 秒缓存，不清掉会还是旧结果
-    if (fresh) resetInstallCache()
-    return ok(await proxyClientStates(clientInfo()))
-  })
-  /**
-   * 写入 / 还原的过程逐行推给界面，同时记进系统日志：
-   * 弹窗关掉后进度就没了，用户反馈问题时只能靠系统日志里的这份留底。
-   * 失败也单独记一条 error，handle 只会把异常转成返回值，不会自己记日志。
-   */
-  const clientAction = async (
-    e: IpcMainInvokeEvent,
-    target: ProxyClientTarget,
-    action: 'apply' | 'restore'
-  ): Promise<IpcResult<unknown>> => {
-    const verb = action === 'apply' ? '写入' : '还原'
-    const progress = (line: string): void => {
-      log('info', `[Proxy] ${target} ${verb}：${line}`)
-      if (!e.sender.isDestroyed()) e.sender.send('proxy:client-progress', { target, line })
-    }
-    try {
-      const run = action === 'apply' ? applyProxyClient : restoreProxyClient
-      return ok(await run(target, clientInfo(), progress))
-    } catch (err) {
-      log('error', `[Proxy] ${target} 配置${verb}失败：${errorMessage(err)}`)
-      throw err
-    }
-  }
-  // Cursor 首次写入要先装 CCursor，还原要卸补丁，过程都较慢
-  handle('proxy:client-apply', (e, target: ProxyClientTarget) => clientAction(e, target, 'apply'))
-  handle('proxy:client-restore', (e, target: ProxyClientTarget) => clientAction(e, target, 'restore'))
-  /** 代为打开 / 重启客户端：图形界面的退出再拉起，命令行的开一个新终端 */
-  handle('proxy:client-open', async (_e, target: ProxyClientTarget) => {
-    await openProxyClient(target)
-    return ok()
-  })
-  /**
-   * 手动指定客户端安装位置：弹系统选择框、校验、存下，返回刷新后的状态。
-   * 对话框在主进程里开，渲染层传不进任意路径，选错的位置也不会被存下。
-   * 用户点了取消返回 null，界面什么都不提示。
-   */
-  handle('proxy:client-pick-path', async (_e, target: ProxyClientTarget) => {
-    const result = await dialog.showOpenDialog(getWindow()!, pickDialogOptions(target))
-    if (result.canceled || !result.filePaths[0]) return ok(null)
-    await saveCustomPath(target, result.filePaths[0])
-    return ok(await proxyClientStates(clientInfo()))
-  })
-  /** 清掉手动指定，回到自动检测 */
-  handle('proxy:client-clear-path', async (_e, target: ProxyClientTarget) => {
-    clearCustomPath(target)
-    return ok(await proxyClientStates(clientInfo()))
-  })
-  /** 在文件管理器里定位客户端配置；只接受目标与下标，路径由主进程解析 */
-  handle('proxy:client-reveal', async (_e, target: ProxyClientTarget, index: number) => {
-    // 与界面展示的列表同一份，下标才对得上
-    const file = displayFiles(target)[index]
-    if (!file) return fail(new Error('未知的配置文件'))
-    if (existsSync(file)) shell.showItemInFolder(file)
-    else await shell.openPath(dirname(file))
-    return ok()
-  })
 
   handle('app:open-external', async (_e, url: string, privateMode?: boolean) => {
     // 只放行 http(s)，避免被诱导打开本地程序或自定义协议
@@ -1031,9 +543,6 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     cancelLogin()
     shutdownLoginServers()
     unregisterProtocol()
-    clearProactiveRenewal('data reset')
-    shutdownKeyServiceSync()
-    shutdownProxySync()
   }
 
   /*
@@ -1114,43 +623,8 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
    * Kiro IDE 会一直指向已经不存在的本地网关，权限规则和桌面 agent 的配置也会残留。
    * 外部还原失败不中断清除（文件被用户删了、应用卸载了），只记日志。
    */
-  /** 机器码被重置过：有原始备份、且当前值和它对不上 */
-  async function machineIdChanged(): Promise<boolean> {
-    try {
-      const status = await getMachineIdStatus()
-      return !!status.backup && !status.matchesBackup
-    } catch {
-      return false
-    }
-  }
-
   handle('data:reset', async () => {
     log('info', '[Backup] 清除全部数据，应用将重启')
-    /*
-     * 机器码最先还原：它要关掉再拉起 Kiro IDE；放在后面的话，IDE 重新起来时
-     * 端点、权限配置还没还原完，会读到半新半旧的状态。
-     * 原始机器码备份在主库里，下面一清就没了，这是唯一的还原机会。
-     */
-    if (await machineIdChanged()) {
-      await restoreMachineId()
-        .then((r) => r.warnings.forEach((w) => log('warn', `[Backup] 还原机器码：${w}`)))
-        .catch((e) => log('warn', `[Backup] 还原机器码失败：${errorMessage(e)}`))
-    }
-    if (getKeyData().enabled) {
-      await disableGateway().catch((e) => log('warn', `[Backup] 还原 Kiro IDE 端点失败：${errorMessage(e)}`))
-    }
-    if (getShellApproveBackup()) {
-      await disableShellAutoApprove().catch((e) => log('warn', `[Backup] 还原 Shell 自动同意失败：${errorMessage(e)}`))
-    }
-    for (const target of proxyClientBackupTargets()) {
-      await restoreProxyClient(target as ProxyClientTarget, clientInfo()).catch((e) =>
-        log('warn', `[Backup] 还原 ${target} 配置失败：${errorMessage(e)}`)
-      )
-    }
-    // 写进终端启动文件 / 用户环境变量的 KIRO_API_KEY 也拿掉，否则清完数据 Key 还留在系统里
-    if (kiroCliEnvWritten() || process.platform !== 'win32') {
-      await removeKiroCliEnv().catch((e) => log('warn', `[Backup] 移除 KIRO_API_KEY 失败：${errorMessage(e)}`))
-    }
     await clearLogs()
     await clearRendererStorage().catch(() => undefined)
     stopServicesForRelaunch()
@@ -1159,11 +633,6 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     relaunchNow()
     return ok()
   })
-
-  // ============ Kiro CLI 环境变量 ============
-  handle('kiroCli:env-status', async () => ok(await kiroCliEnvStatus()))
-  handle('kiroCli:env-write', async (_e, key: string) => ok(await writeKiroCliEnv(String(key ?? ''))))
-  handle('kiroCli:env-remove', async () => ok(await removeKiroCliEnv()))
 
   // ============ 系统日志 ============
   handle('log:query', (_e, query: LogQuery) => ok(queryLogs(query)))

@@ -407,7 +407,7 @@ onBeforeUnmount(() => {
   min-width: 0;
   /*
    * 单元格同时是尺寸查询容器：插槽里的卡片可以按「自己实际拿到的宽度」分档排版
-   * （见账号 / API Key 卡片里的 @container）。
+   * （见账号卡片里的 @container）。
    * 不用媒体查询是因为侧栏能折叠、列数也会变，窗口宽度并不等于单元格宽度。
    */
   container-type: inline-size;

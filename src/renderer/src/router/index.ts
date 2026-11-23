@@ -17,12 +17,6 @@ const router = createRouter({
       meta: { title: '账户管理' }
     },
     {
-      path: '/keys',
-      name: 'keys',
-      component: () => import('@/views/KeysView.vue'),
-      meta: { title: 'API Key 管理' }
-    },
-    {
       path: '/subscription',
       name: 'subscription',
       component: () => import('@/views/SubscriptionView.vue'),
@@ -33,12 +27,6 @@ const router = createRouter({
       name: 'pricing',
       component: () => import('@/views/PricingView.vue'),
       meta: { title: '实时价格' }
-    },
-    {
-      path: '/proxy',
-      name: 'proxy',
-      component: () => import('@/views/ProxyView.vue'),
-      meta: { title: '本地反代' }
     },
     {
       path: '/tools',

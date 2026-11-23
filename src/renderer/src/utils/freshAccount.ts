@@ -3,7 +3,7 @@
  *
  * 门户接口（订阅等）靠 cookie 里的 AccessToken 认身份，过期就是
  * 401 UnauthorizedException: Authentication required or access denied。
- * 非 IDE 当前登录的账号缓存里那份基本都过期了（IDE 只续自己在用的那个），所以按需续一次；
+ * 账号缓存里那份 accessToken 常常已经过期，所以按需续一次；
  * 留 1 分钟余量，避免请求发出途中过期。onRefreshing 在真正续期的前后各调一次，用于切换加载文案。
  */
 import { useAccountsStore } from '@/stores/accounts'

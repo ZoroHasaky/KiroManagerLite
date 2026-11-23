@@ -11,7 +11,6 @@ import {
   RiseOutlined,
   SafetyOutlined,
   StopOutlined,
-  SwapOutlined,
   TeamOutlined,
   ThunderboltOutlined,
   WarningOutlined
@@ -44,7 +43,11 @@ const settingsStore = useSettingsStore()
 
 const precision = computed(() => settingsStore.settings.usagePrecision)
 const stats = computed(() => accountsStore.stats)
-const active = computed(() => accountsStore.activeAccount)
+/*
+ * 主页的「最近使用账号」卡片展示最近动过的那一个号。
+ * 它只是「账号列表里最近活跃的那个」，不代表任何外部程序正在使用它。
+ */
+const active = computed(() => accountsStore.recentAccount)
 
 const statCards = computed(() => [
   {
@@ -289,8 +292,8 @@ const recent = computed(() => {
 
 const tips = [
   '点击左侧「账户管理」可以查看和管理所有账号',
-  '在账号卡片上点击切换图标可以一键写入 Kiro IDE',
   '开启「自动刷新」后，即将过期的 Token 会自动续期',
+  '账号卡片上的「测活」会发一次真实对话，用来确认账号还能用',
   '使用「隐私模式」可以隐藏邮箱等敏感信息'
 ]
 
@@ -329,7 +332,7 @@ function previewOf(list: Account[]): string {
         <img class="hero-logo" :src="kiroLogo" alt="Kiro Manager Lite" />
         <div>
           <h1 class="hero-title">欢迎使用 Kiro Manager Lite</h1>
-          <p class="hero-sub muted">管理你的 Kiro IDE 账号，一键切换，高效开发</p>
+          <p class="hero-sub muted">集中管理账号、订阅与用量，一目了然</p>
         </div>
       </div>
     </section>
@@ -453,7 +456,7 @@ function previewOf(list: Account[]): string {
           <span class="icon-box sm" style="background: rgba(124, 58, 237, 0.12); color: #7c3aed">
             <ThunderboltOutlined />
           </span>
-          当前使用账号
+          最近活跃账号
         </span>
       </template>
 
@@ -555,11 +558,8 @@ function previewOf(list: Account[]): string {
         </div>
       </template>
 
-      <a-empty v-else description="本地 Kiro 凭证未匹配到已管理的账号">
-        <a-space>
-          <a-button type="primary" @click="router.push({ name: 'accounts' })">去账户管理</a-button>
-          <a-button @click="accountsStore.syncActiveFromIde()">重新检测</a-button>
-        </a-space>
+      <a-empty v-else description="还没有任何账号">
+        <a-button type="primary" @click="router.push({ name: 'accounts' })">去账户管理</a-button>
       </a-empty>
     </a-card>
 
@@ -589,7 +589,6 @@ function previewOf(list: Account[]): string {
             <template #renderItem="{ item }">
               <a-list-item style="padding: 5px 0">
                 <a-space :size="6">
-                  <SwapOutlined v-if="item.isActive" style="color: #52c41a" />
                   <span>{{ displayName(item) }}</span>
                   <span class="muted" style="font-size: 12px">{{ relativeTime(item.lastUsedAt) }}</span>
                 </a-space>

@@ -8,8 +8,7 @@ import type {
   AccountGroup,
   AccountImportItem,
   ExportBundle,
-  IdpType,
-  KeyEntry
+  IdpType
 } from '@shared/types'
 
 /** 与 AccountExportFormat 同一套取值，导出格式需要持久化所以类型定义放在 shared */
@@ -235,10 +234,14 @@ export function buildExportContent(
         app: 'kiro-account-lite',
         version: appVersion,
         exportedAt: Date.now(),
-        accounts: accounts.map(({ isActive: _isActive, ...rest }) =>
+        accounts: accounts.map((account) =>
           includeCredentials
-            ? rest
-            : { ...rest, password: undefined, credentials: { ...rest.credentials, accessToken: '', refreshToken: '' } }
+            ? account
+            : {
+                ...account,
+                password: undefined,
+                credentials: { ...account.credentials, accessToken: '', refreshToken: '' }
+              }
         ),
         ...(usedGroups.length ? { groups: usedGroups } : {})
       }
@@ -389,29 +392,6 @@ export function exportFilename(format: ExportFormat, accounts: Account[]): strin
     if (name) return `kiro-account-${name}-${exportStamp()}.${ext}`
   }
   return `kiro-accounts-${exportStamp()}.${ext}`
-}
-
-// ============ API Key 导出 ============
-
-/**
- * API Key 导出格式。
- * keyRegion 带区域，回导时能还原每个 Key 归属的区域；key 只给裸密钥，便于粘到别处使用。
- */
-export type ApiKeyExportFormat = 'keyRegion' | 'key'
-
-/** 分隔符沿用卡密格式的 ----，导入侧已能识别 */
-export function buildApiKeyExportContent(
-  format: ApiKeyExportFormat,
-  keys: Pick<KeyEntry, 'key' | 'region'>[]
-): string {
-  const lines = keys.map((entry) =>
-    format === 'keyRegion' ? `${entry.key}----${entry.region || DEFAULT_REGION}` : entry.key
-  )
-  return lines.join('\n') + '\n'
-}
-
-export function apiKeyExportFilename(): string {
-  return `kiro-api-keys-${exportStamp()}.txt`
 }
 
 // ============ 分割导出（打包成 zip） ============

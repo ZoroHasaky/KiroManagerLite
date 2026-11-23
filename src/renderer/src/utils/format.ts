@@ -1,4 +1,4 @@
-import type { AccountStatus, IdpType, KeyStatus, SubscriptionType } from '@shared/types'
+import type { AccountStatus, IdpType, SubscriptionType } from '@shared/types'
 
 /** 打码结果缓存：账号多、重渲染频繁，避免反复算 md5 */
 const maskedEmailCache = new Map<string, string>()
@@ -192,7 +192,7 @@ export const SUBSCRIPTION_META: Record<SubscriptionType, { text: string; color: 
   Pro: { text: 'Pro', color: 'blue' },
   Pro_Plus: { text: 'Pro+', color: 'purple' },
   Pro_Max: { text: 'Pro Max', color: 'magenta' },
-  // Power 用 gold，与 API Key 页的配色一致
+  // Power 用 gold，与其余付费档位区分开
   Power: { text: 'Power', color: 'gold' },
   Teams: { text: 'Teams', color: 'cyan' },
   // 学生号：接口标题是 KIRO STUDENT，这里与其余档位一样用英文原名
@@ -218,13 +218,7 @@ export function subscriptionLabel(subscription: {
   return subscription.title || subscriptionMeta(subscription.type).text
 }
 
-/** API Key 的检查状态：卡片标签与筛选 chip 共用 */
-export const KEY_STATUS_META: Record<KeyStatus, { text: string; color: string }> = {
-  normal: { text: '正常', color: 'green' },
-  error: { text: '异常', color: 'red' },
-  unchecked: { text: '未检查', color: 'default' }
-}
-
+/** 登录方式：文案与卡片标签的颜色 */
 export const IDP_META: Record<IdpType, { text: string; color: string }> = {
   BuilderId: { text: 'Builder ID', color: 'geekblue' },
   Github: { text: 'GitHub', color: 'default' },

@@ -9,16 +9,6 @@ export function displayEmail(email: string, privacy: boolean): string {
   return privacy ? maskEmail(email) : email
 }
 
-/** API Key 统一展示：仅隐私模式开启时打码。 */
-export function maskKey(key: string): string {
-  if (key.length <= 16) return `${key.slice(0, 4)}${'*'.repeat(Math.max(4, key.length - 4))}`
-  return `${key.slice(0, 8)}${'*'.repeat(Math.min(16, key.length - 16))}${key.slice(-8)}`
-}
-
-export function displayKey(key: string, privacy: boolean): string {
-  return privacy ? maskKey(key) : key
-}
-
 /**
  * 账号唯一标识（形如 d-9067c98495.d49834d8-80b1-70c0-943f-8fbac18f1c23）的打码。
  *
@@ -65,7 +55,7 @@ export function displayName(account: NamedAccount, privacy: boolean): string {
 }
 
 /**
- * Kiro 上游端点的叫法，和反代参数里「上游端点」的选项名一致。
+ * Kiro 上游端点的叫法，用于测活的原始返回展示。
  * 传主机名或完整地址都行；认不出的原样返回主机名。
  */
 export function endpointName(hostOrUrl: string): string {

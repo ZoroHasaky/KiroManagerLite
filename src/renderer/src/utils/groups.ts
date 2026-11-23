@@ -1,4 +1,4 @@
-// 分组相关的公用小工具：账号列表与 API Key 列表共用同一套分组语义
+// 分组相关的公用小工具：账号列表的分组语义集中在这里
 import type { AccountGroup } from '@shared/types'
 import { groupIdsOf, isTrashed, type Groupable, type Trashable } from '@shared/itemGroups'
 

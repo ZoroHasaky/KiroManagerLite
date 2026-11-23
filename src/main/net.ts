@@ -2,14 +2,13 @@
 import { Agent, ProxyAgent, fetch as undiciFetch, type Dispatcher, type RequestInit as UndiciRequestInit } from 'undici'
 
 /**
- * 连接保持时间，由反代参数「上游连接保持」设置，默认 60 秒。
+ * 连接保持时间，默认 60 秒。
  *
- * undici 默认空闲 4 秒就关掉连接，而 agent 两次请求之间（用户在读回复、客户端在执行工具）
+ * undici 默认空闲 4 秒就关掉连接，而两次请求之间（用户在读测活输出、在界面上操作）
  * 通常远不止 4 秒，于是几乎每个请求都要重新走一遍 TCP + TLS（走代理时还要重建 CONNECT 隧道），
- * 实测重连一次多花约 0.6 秒，全部算进「上游接收」。服务端给了更短的 keep-alive 提示时仍以服务端为准。
+ * 实测重连一次多花约 0.6 秒。服务端给了更短的 keep-alive 提示时仍以服务端为准。
  */
-const DEFAULT_KEEP_ALIVE_MS = 60_000
-let keepAliveMs = DEFAULT_KEEP_ALIVE_MS
+const KEEP_ALIVE_MS = 60_000
 
 function keepAliveOptions(): {
   keepAliveTimeout: number
@@ -17,9 +16,9 @@ function keepAliveOptions(): {
   allowH2: false
 } {
   return {
-    // 上限至少 10 分钟，且不小于用户设的值，否则 undici 会把服务端提示夹到更短
-    keepAliveTimeout: keepAliveMs,
-    keepAliveMaxTimeout: Math.max(10 * 60_000, keepAliveMs),
+    // 上限至少 10 分钟，且不小于实际值，否则 undici 会把服务端提示夹到更短
+    keepAliveTimeout: KEEP_ALIVE_MS,
+    keepAliveMaxTimeout: Math.max(10 * 60_000, KEEP_ALIVE_MS),
     /*
      * 固定走 HTTP/1.1。
      *
@@ -33,27 +32,8 @@ function keepAliveOptions(): {
   }
 }
 
-/** 不走代理时用的连接池：同样按设置放宽保持时间（全局默认的那个是 4 秒） */
-let directAgent = new Agent(keepAliveOptions())
-
-/** 丢掉现有连接池，下一次请求按当前设置重建 */
-function resetAgents(): void {
-  for (const agent of agentCache.values()) void agent?.close?.()
-  agentCache.clear()
-  const old = directAgent
-  directAgent = new Agent(keepAliveOptions())
-  // 正在进行的流式请求还在用旧池，等它们自然结束再关，不能 destroy
-  void old.close().catch(() => undefined)
-}
-
-/** 设置上游连接保持时间（秒）；非法值回落默认 60 秒，值没变不重建连接池 */
-export function setKeepAlive(seconds: number): void {
-  const ms = Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) : DEFAULT_KEEP_ALIVE_MS
-  if (ms === keepAliveMs) return
-  keepAliveMs = ms
-  resetAgents()
-  console.log(`[Net] keep-alive → ${ms / 1000}s`)
-}
+/** 不走代理时用的连接池：同样放宽保持时间（全局默认的那个是 4 秒） */
+const directAgent = new Agent(keepAliveOptions())
 
 let proxyEnabled = false
 let proxyUrl = ''

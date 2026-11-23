@@ -1,11 +1,9 @@
-// macOS 应用菜单（顶部菜单栏）：中文化系统默认菜单，并补上页面导航、
-// Kiro IDE 开关与「关于」弹窗。
+// macOS 应用菜单（顶部菜单栏）：中文化系统默认菜单，并补上页面导航与「关于」弹窗。
 //
 // 只在 darwin 生效：Windows / Linux 的窗口菜单保持原有的 autoHideMenuBar 默认行为。
 import { app, clipboard, dialog, Menu } from 'electron'
 import type { BrowserWindow, MenuItemConstructorOptions } from 'electron'
 import { release, type as osType } from 'os'
-import { closeKiroIde, openKiroIde } from './kiroProcess'
 import { sendToRenderer } from './utils'
 import { currentVersion } from './packManager'
 
@@ -24,17 +22,9 @@ function parentWindow(deps: AppMenuDeps): BrowserWindow | null {
   return win && !win.isDestroyed() ? win : null
 }
 
-/** 统一的原生提示弹窗 */
-function alert(deps: AppMenuDeps, message: string, ok = true): void {
-  const options = { type: ok ? ('info' as const) : ('warning' as const), buttons: ['确定'], message }
-  const parent = parentWindow(deps)
-  if (parent) void dialog.showMessageBox(parent, options)
-  else void dialog.showMessageBox(options)
-}
-
 // ============ 关于弹窗 ============
 
-/** 运行环境明细，与 Kiro IDE 的关于面板同样的字段顺序 */
+/** 运行环境明细，字段顺序与本应用「关于」页保持一致 */
 function aboutDetail(): string {
   const { electron, chrome, node, v8 } = process.versions
   return [
@@ -87,17 +77,6 @@ function navItem(
   }
 }
 
-/** 打开 / 关闭 Kiro IDE，结果用原生弹窗回执 */
-function ideItem(deps: AppMenuDeps, label: string, open: boolean): MenuItemConstructorOptions {
-  return {
-    label,
-    click: async () => {
-      const res = open ? await openKiroIde() : await closeKiroIde()
-      alert(deps, res.message, res.ok)
-    }
-  }
-}
-
 function buildTemplate(deps: AppMenuDeps): MenuItemConstructorOptions[] {
   return [
     {
@@ -122,10 +101,7 @@ function buildTemplate(deps: AppMenuDeps): MenuItemConstructorOptions[] {
         navItem(deps, '主页', 'home', 'Command+1'),
         navItem(deps, '账户管理', 'accounts', 'Command+2'),
         navItem(deps, '设置', 'settings', 'Command+3'),
-        navItem(deps, '关于', 'about', 'Command+4'),
-        { type: 'separator' },
-        ideItem(deps, '打开主程序', true),
-        ideItem(deps, '关闭主程序', false)
+        navItem(deps, '关于', 'about', 'Command+4')
       ]
     },
     {

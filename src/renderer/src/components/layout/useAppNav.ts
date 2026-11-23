@@ -6,17 +6,14 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   HomeOutlined,
   TeamOutlined,
-  KeyOutlined,
   CreditCardOutlined,
   MoneyCollectOutlined,
-  CloudServerOutlined,
   ToolOutlined,
   FileTextOutlined,
   SettingOutlined,
   InfoCircleOutlined
 } from '@ant-design/icons-vue'
 import { useSettingsStore } from '@/stores/settings'
-import { useKeysStore } from '@/stores/keys'
 
 export interface NavItem {
   key: string
@@ -28,7 +25,6 @@ export function useAppNav() {
   const route = useRoute()
   const router = useRouter()
   const settingsStore = useSettingsStore()
-  const keysStore = useKeysStore()
 
   const selectedKeys = computed(() => [route.name as string])
 
@@ -46,14 +42,8 @@ export function useAppNav() {
       { key: 'home', label: '主页', icon: HomeOutlined },
       // 账户管理不跟数量：账号成千上万时数字一直在变，侧栏宽度跟着抖，也没人靠它判断什么
       { key: 'accounts', label: '账户管理', icon: TeamOutlined },
-      {
-        key: 'keys',
-        label: keysStore.count ? `API Key 管理（${keysStore.count}个）` : 'API Key 管理',
-        icon: KeyOutlined
-      },
       { key: 'subscription', label: '订阅管理', icon: CreditCardOutlined },
       { key: 'pricing', label: '实时价格', icon: MoneyCollectOutlined },
-      { key: 'proxy', label: '本地反代', icon: CloudServerOutlined },
       { key: 'tools', label: '常用工具', icon: ToolOutlined },
       { key: 'logs', label: '系统日志', icon: FileTextOutlined },
       { key: 'settings', label: '设置', icon: SettingOutlined },

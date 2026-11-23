@@ -1,4 +1,7 @@
-// 账户业务逻辑：凭证校验、状态/积分刷新、Token 刷新、切号
+// 账户业务逻辑：凭证校验、状态/积分刷新、Token 刷新
+//
+// 这里只做账号管理本身的事，不向任何外部程序写凭证：刷新出来的新 token
+// 交给调用方写进本应用自己的数据里。
 import {
   getUsageAndLimits,
   getUserInfo,
@@ -11,12 +14,7 @@ import {
   type UsageResponse
 } from './kiroApi'
 import { errorMessage, isCredentialRejected } from '../shared/errors'
-import {
-  profileArnCandidates,
-  readKiroAuthToken,
-  resolveProfileArn,
-  writeKiroAuthToken
-} from './kiroAuth'
+import { resolveProfileArn } from './kiroAuth'
 import { sleep } from './utils'
 import { DEFAULT_REGION } from '../shared/regions'
 import type {
@@ -25,38 +23,17 @@ import type {
   AuthMethod,
   IdpType,
   RefreshTokenResult,
-  SwitchAccountInput,
-  SwitchAccountResult,
   VerifyCredentialsInput
 } from '../shared/types'
 
 /** 接口没给 expiresIn 时的兜底有效期（秒） */
 const DEFAULT_EXPIRES_IN = 3600
 
-/** 写盘用的过期时间：从当前时刻推 expiresIn 秒 */
-function expiresAtIso(expiresIn: number): string {
-  return new Date(Date.now() + expiresIn * 1000).toISOString()
-}
-
 /** 封禁错误带 isBanned 标记向上抛，IPC 层据此回传 banned 字段 */
 function bannedError(message: string): Error & { isBanned?: boolean } {
   const error = new Error(message) as Error & { isBanned?: boolean }
   error.isBanned = true
   return error
-}
-
-/** 记录最近一次通过本应用切换到 IDE 的账号，用于判断"是否为 IDE 当前激活账号" */
-let lastSwitchedAccountId: string | null = null
-
-export function setLastSwitchedAccountId(id: string | null): void {
-  lastSwitchedAccountId = id
-}
-
-/** 删除管理记录后同步清除运行时账号引用，避免后续续期误认已删除账号。 */
-export function forgetSwitchedAccounts(ids: string[]): void {
-  if (lastSwitchedAccountId && new Set(ids).has(lastSwitchedAccountId)) {
-    lastSwitchedAccountId = null
-  }
 }
 
 /** CBOR/REST 接口的 Idp 头取值 */
@@ -131,7 +108,7 @@ async function usageArnCandidates(
     if (!out.includes(arn)) out.push(arn)
   }
 
-  // 账号已存的 ARN 最可信：它要么来自上游，要么是切号时实测过的
+  // 账号已存的 ARN 最可信：它要么来自上游，要么是校验时实测过的
   if (input.profileArn) push(input.profileArn)
 
   if (input.provider === 'Enterprise') {
@@ -359,96 +336,6 @@ export async function checkAccountStatus(account: Account): Promise<AccountSnaps
 
 // ============ 刷新 Token ============
 
-/**
- * 刷新账号 accessToken。
- * 仅当该账号确实是 Kiro IDE 当前激活账号时才回写磁盘 token 文件，
- * 否则会把 IDE 正在用的账号覆盖掉。
- */
-/**
- * 轮换出新凭证后，若该账号确实是 IDE 当前激活账号，就把新凭证写进 IDE 的 token 文件。
- *
- * refreshToken 是轮换式的：任何一次刷新都会让旧值作废。只要新凭证没同步给 IDE，
- * IDE 手里那份就成了废票，之后它自己刷新会被登出，本应用的主动续期也会因为
- * 「磁盘 refreshToken 对不上」而判定不是激活账号并停止调度。
- *
- * @param previousRefreshToken 轮换前的 refreshToken，用来和磁盘上的值比对身份
- */
-export async function syncCredentialsToIde(
-  account: Account,
-  next: { accessToken: string; refreshToken: string; expiresIn: number },
-  previousRefreshToken: string
-): Promise<{ syncedToIde: boolean; syncSkipReason?: string }> {
-  const { clientId, clientSecret, region, authMethod, provider, startUrl } = account.credentials
-  try {
-    const disk = await readKiroAuthToken()
-    // 磁盘上可能已经是轮换后的新值（本次刷新已写过盘），两者都算同一个账号
-    const matchByRefresh =
-      !!disk && (disk.refreshToken === previousRefreshToken || disk.refreshToken === next.refreshToken)
-    const matchBySwitch = lastSwitchedAccountId === account.id
-    if (!matchByRefresh && !matchBySwitch) {
-      return {
-        syncedToIde: false,
-        syncSkipReason: disk
-          ? '该账号不是 Kiro IDE 当前激活账号，已跳过磁盘同步'
-          : '本地未找到 kiro-auth-token.json（IDE 未登录），已跳过磁盘同步'
-      }
-    }
-
-    await writeKiroAuthToken({
-      accessToken: next.accessToken,
-      refreshToken: next.refreshToken,
-      expiresAtIso: expiresAtIso(next.expiresIn),
-      authMethod: authMethod === 'social' ? 'social' : 'IdC',
-      provider: provider || (disk?.provider as IdpType) || account.idp || 'BuilderId',
-      region: region || disk?.region,
-      startUrl,
-      clientId,
-      clientSecret,
-      /*
-       * 优先沿用磁盘上已有的 profileArn：切号时那个值是逐个实测过的，
-       * 这里再走一遍 resolveProfileArn 会把它覆盖成占位符，
-       * IDE 下一次调用用量接口就可能变成 Invalid token。
-       */
-      profileArn:
-        account.profileArn ||
-        account.credentials.profileArn ||
-        disk?.profileArn ||
-        (authMethod === 'social'
-          ? resolveProfileArn({ authMethod, provider: provider || account.idp, region })
-          : undefined)
-    })
-    lastSwitchedAccountId = account.id
-    return { syncedToIde: true }
-  } catch (e) {
-    return { syncedToIde: false, syncSkipReason: `磁盘同步失败：${errorMessage(e)}` }
-  }
-}
-
-/**
- * 磁盘上可能存着比内存更新的 refreshToken：Kiro IDE 自己的 refresh loop 抢先轮换过时，
- * 应用内存里那一份已经是废票，直接重试还是 Bad credentials。
- *
- * 只有能确认「该账号就是 IDE 当前登录账号」时才允许拿磁盘凭证，否则会用别人的
- * refreshToken 去刷新，既把那个账号的凭证换废，又把结果错记到当前账号上。
- */
-async function diskRefreshTokenFor(account: Account, usedToken: string): Promise<string | null> {
-  const ownsIde = lastSwitchedAccountId === account.id || account.isActive === true
-  if (!ownsIde) return null
-
-  const disk = await readKiroAuthToken().catch(() => null)
-  const diskToken = disk?.refreshToken
-  // 磁盘上还是刚才那一份，说明作废与 IDE 无关，换它重试没有意义
-  if (!diskToken || diskToken === usedToken) return null
-
-  // 登录方式与 provider 对不上时，磁盘上那份属于另一个账号。
-  // social 的判定口径与 readLocalKiroCredentials 保持一致：只有显式 social 才算社交登录
-  if ((disk?.authMethod === 'social') !== (account.credentials.authMethod === 'social')) return null
-  const accountProvider = account.credentials.provider || account.idp
-  if (disk?.provider && accountProvider && disk.provider !== accountProvider) return null
-
-  return diskToken
-}
-
 async function performRefreshAccountToken(account: Account): Promise<RefreshTokenResult> {
   const { refreshToken, clientId, clientSecret, region, authMethod } = account.credentials
 
@@ -456,43 +343,17 @@ async function performRefreshAccountToken(account: Account): Promise<RefreshToke
   assertRefreshCredentials(cred, '缺少 OIDC 刷新凭证（clientId / clientSecret）')
 
   // 网络类失败重试几次；invalid_grant 之类的凭证问题不重试，避免白等
-  let usedRefreshToken = refreshToken
-  let result: TokenRefreshResult & { accessToken: string }
-  try {
-    result = await refreshWithRetry('刷新 Token', cred, 'Token 刷新失败')
-  } catch (error) {
-    const message = errorMessage(error)
-    const fallback = isCredentialRejected(message)
-      ? await diskRefreshTokenFor(account, refreshToken)
-      : null
-    // 拿不到更新的凭证就把原始错误抛出去，交给界面提示重新登录
-    if (!fallback) throw error
+  const result = await refreshWithRetry('刷新 Token', cred, 'Token 刷新失败')
 
-    console.warn('[AccountService] 内存中的 refreshToken 已作废，改用 Kiro IDE 磁盘上的最新凭证重试')
-    usedRefreshToken = fallback
-    result = await refreshWithRetry(
-      '用磁盘凭证刷新 Token',
-      { ...cred, refreshToken: fallback },
-      'Token 刷新失败'
-    )
+  return {
+    accessToken: result.accessToken,
+    refreshToken: result.refreshToken || refreshToken,
+    expiresIn: result.expiresIn ?? DEFAULT_EXPIRES_IN
   }
-
-  const accessToken = result.accessToken
-  const newRefreshToken = result.refreshToken || usedRefreshToken
-  const expiresIn = result.expiresIn ?? DEFAULT_EXPIRES_IN
-
-  const { syncedToIde, syncSkipReason } = await syncCredentialsToIde(
-    account,
-    { accessToken, refreshToken: newRefreshToken, expiresIn },
-    // 身份比对要用本次实际送出去的那一份，兜底重试后它才是磁盘上的旧值
-    usedRefreshToken
-  )
-
-  return { accessToken, refreshToken: newRefreshToken, expiresIn, syncedToIde, syncSkipReason }
 }
 
 /**
- * 同一账号的刷新去重：手动刷新、自动刷新、主动续期可能几乎同时命中同一个账号，
+ * 同一账号的刷新去重：手动刷新与自动刷新可能几乎同时命中同一个账号，
  * 各自带着同一份旧 refreshToken 发请求，先到的成功并轮换，后到的必然 401。
  * 这里让并发调用复用同一个 in-flight 结果。
  */
@@ -507,145 +368,4 @@ export function refreshAccountToken(account: Account): Promise<RefreshTokenResul
   })
   refreshInFlight.set(account.id, task)
   return task
-}
-
-// ============ 切号 ============
-
-/**
- * 把账号写入 Kiro IDE 的凭证文件。
- *
- * 关键点：
- *  1. 写盘前强制 refresh：OIDC 的 refreshToken 是轮换式的，只更新 accessToken 的话
- *     IDE 一小时后会拿作废的旧 refreshToken 去刷新并被强制登出。refresh 失败直接中止。
- *  2. profileArn 逐个试：写错 ARN 是 IDE 报 “Unable to fetch account usage data:
- *     Invalid token / User is not authorized” 的主因。Enterprise 要用自己 profile 的
- *     真实 ARN，BuilderId 则不该带 ARN。这里先实测再落盘。
- *  3. 清理陈旧客户端注册文件：上一个账号留下的 {hash}.json 会让 IDE 用错
- *     clientId/secret 去刷新，失败后同样把用户登出。
- *  4. 写完再用同一个 accessToken 实测一次用量接口，把结论回传界面，
- *     而不是「写完就算成功」。
- */
-export async function switchAccount(input: SwitchAccountInput): Promise<SwitchAccountResult> {
-  const {
-    refreshToken,
-    clientId = '',
-    clientSecret = '',
-    region = DEFAULT_REGION,
-    startUrl,
-    provider = 'BuilderId',
-    profileArn
-  } = input
-  const authMethod = inferAuthMethod(provider, input.authMethod)
-  const idp = resolveIdp(provider, authMethod)
-  const notes: string[] = []
-
-  let accessToken = input.accessToken
-  let finalRefreshToken = refreshToken
-  let expiresIn = DEFAULT_EXPIRES_IN
-
-  if (refreshToken) {
-    /*
-     * refresh 是切号的必要前置，网络抖动导致的失败重试几次通常就能过；
-     * 但要注意 refreshToken 是轮换式的：一旦服务端已经受理并轮换，
-     * 重试用的还是旧 token 就会拿到 invalid_grant，这类错误不重试。
-     */
-    const refreshed = await refreshWithRetry(
-      '切号前刷新 Token',
-      { refreshToken, clientId, clientSecret, region, authMethod },
-      '未知错误'
-    )
-      .then((r) => ({ ok: true as const, value: r }))
-      .catch((e) => ({ ok: false as const, error: errorMessage(e) }))
-
-    if (!refreshed.ok) {
-      throw new Error(
-        `刷新 Token 失败，已中止切换以避免 Kiro IDE 被强制登出。原因：${refreshed.error || '未知错误'}`
-      )
-    }
-    accessToken = refreshed.value.accessToken
-    finalRefreshToken = refreshed.value.refreshToken || refreshToken
-    expiresIn = refreshed.value.expiresIn ?? DEFAULT_EXPIRES_IN
-  }
-
-  // Enterprise 账号先问一次真实 profile，拿到就不用猜了
-  let knownArn = profileArn
-  if (provider === 'Enterprise' && !knownArn) {
-    const [firstArn] = await listAvailableProfiles(accessToken, region).catch(() => [])
-    if (firstArn) {
-      knownArn = firstArn
-      notes.push(`已获取企业账号的真实 profileArn：${firstArn}`)
-    }
-  }
-
-  // 逐个候选做实测，第一个能调通用量接口的就是要写盘的那个
-  const candidates = profileArnCandidates({ profileArn: knownArn, authMethod, provider, region })
-  /*
-   * 用对象而不是裸字符串记录结果：候选里的 undefined 表示「确定不写 ARN」，
-   * 和「还没测出可用候选」是两种含义，混在一起会把实测通过的「不写」
-   * 又覆盖成占位符 ARN，IDE 下一次调用用量接口就报 Invalid token。
-   */
-  let chosen: { arn?: string } | null = null
-  let verifyError: string | undefined
-
-  for (const candidate of candidates) {
-    try {
-      /*
-       * 候选原样送，不要过 arnForApiCall：用量接口要求带 profileArn，
-       * 把 BuilderId 占位符剥成 undefined 会让第一个候选必然 403，
-       * 于是每次切号都报「profileArn 校验未通过」。
-       */
-      await withRetry('校验 profileArn', () =>
-        getUsageAndLimits(accessToken, idp, candidate, region)
-      )
-      chosen = { arn: candidate }
-      verifyError = undefined
-      break
-    } catch (error) {
-      const msg = errorMessage(error)
-      verifyError = msg || '用量接口没有返回可识别的结果'
-      if (isBannedError(msg)) throw bannedError(msg)
-      // 只有授权维度的错误才值得换 ARN 再试，网络问题换了也一样
-      if (!isAuthScopeError(msg)) break
-      notes.push(`profileArn ${candidate ?? '(不写)'} 校验失败，换下一个候选`)
-    }
-  }
-
-  const verified = chosen !== null
-  // 全部候选都没通过时仍然写盘：多数情况是网络波动，IDE 自己也会重试
-  const arnToWrite = verified
-    ? chosen?.arn
-    : resolveProfileArn({ profileArn: knownArn, authMethod, provider, region })
-  if (!verified) {
-    notes.push(`未能实测通过，按默认规则写入 profileArn：${arnToWrite ?? '(不写)'}`)
-  }
-
-  const { tokenPath, clientRegPath, prunedRegistrations } = await writeKiroAuthToken({
-    accessToken,
-    refreshToken: finalRefreshToken,
-    expiresAtIso: expiresAtIso(expiresIn),
-    authMethod,
-    provider,
-    region,
-    startUrl,
-    clientId,
-    clientSecret,
-    profileArn: arnToWrite,
-    pruneStaleRegistrations: true
-  })
-  if (prunedRegistrations) {
-    notes.push(`清理了 ${prunedRegistrations} 个陈旧的客户端注册文件`)
-  }
-
-  lastSwitchedAccountId = input.accountId
-  return {
-    accessToken,
-    refreshToken: finalRefreshToken,
-    expiresIn,
-    tokenPath,
-    clientRegPath,
-    profileArn: arnToWrite,
-    verified,
-    verifyError: verified ? undefined : verifyError || '用量接口没有返回可识别的结果',
-    notes
-  }
 }

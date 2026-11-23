@@ -41,14 +41,12 @@ import { useUpdateStore } from '@/stores/update'
 import SettingSwitch from '@/components/common/SettingSwitch.vue'
 import PathMenu from '@/components/common/PathMenu.vue'
 import { useAccountsStore } from '@/stores/accounts'
-import { useKeysStore } from '@/stores/keys'
 import { formatCheckedAt } from '@/utils/format'
 import { now } from '@/utils/now'
 import { bodyPopupContainer, confirmDanger } from '@/utils/ui'
 
 const settingsStore = useSettingsStore()
 const accountsStore = useAccountsStore()
-const keysStore = useKeysStore()
 const updateStore = useUpdateStore()
 
 const settings = computed(() => settingsStore.settings)
@@ -148,10 +146,6 @@ const nextIdleUsageRefreshText = computed(() =>
 )
 const nextKeyFlushText = computed(() => nextRunText(accountsStore.nextKeyFlushAt, '刷新'))
 const nextUsageFlushText = computed(() => nextRunText(accountsStore.nextUsageFlushAt, '刷新'))
-// API Key 那条仍是一体化的定时同步，没有「检测 / 刷新」之分，沿用「刷新」
-const nextApiKeyUsageRefreshText = computed(() =>
-  nextRunText(keysStore.nextUsageRefreshAt, '刷新')
-)
 
 watch(
   () => settingsStore.settings.proxyUrl,
@@ -171,7 +165,7 @@ const layoutModeOptions: { value: LayoutMode; label: string }[] = [
   { value: 'top', label: '上下布局' }
 ]
 
-/** 列表展示形态。账号与 API Key 各记一份，选项相同 */
+/** 账号列表的展示形态 */
 const displayModeOptions: { value: AccountDisplayMode; label: string }[] = [
   { value: 'card', label: '卡片' },
   { value: 'compact', label: '紧凑卡片' },
@@ -284,8 +278,6 @@ type NumericSettingKey =
   | 'keyFlushSize'
   | 'usageFlushInterval'
   | 'usageFlushSize'
-  | 'apiKeyUsageRefreshInterval'
-  | 'apiKeyRefreshConcurrency'
 
 function updateNumber(key: NumericSettingKey, value: unknown): void {
   update({ [key]: Number(value) || DEFAULT_SETTINGS[key] })
@@ -301,7 +293,7 @@ function openPath(target: 'store' | 'backup'): void {
 }
 
 /** 备份范围说明，和主进程 dataBackup 里实际打包的内容一致 */
-const BACKUP_SCOPE = '账号、Kiro API Key、账号与 API Key 的用量记录、本地反代的 API Key'
+const BACKUP_SCOPE = '账号与账号的积分变化记录'
 
 // ============ 备份计划 ============
 
@@ -418,9 +410,7 @@ async function importAll(): Promise<void> {
   if (!summary) return
   const parts: string[] = []
   if (summary.accounts !== null) parts.push(`${summary.accounts} 个账号`)
-  if (summary.apiKeys !== null) parts.push(`${summary.apiKeys} 个 Kiro API Key`)
-  if (summary.proxyKeys !== null) parts.push(`${summary.proxyKeys} 个反代 API Key`)
-  if (summary.usageHistory) parts.push('用量记录')
+  if (summary.usageHistory) parts.push('积分变化记录')
   const lines = [
     `导出时间：${summary.exportedAt ? formatBackupTime(summary.exportedAt) : '未知'}${summary.appVersion ? `（v${summary.appVersion}）` : ''}`,
     `包含：${parts.join('、') || '无可导入的内容'}`,
@@ -443,14 +433,14 @@ async function importAll(): Promise<void> {
 }
 
 /*
- * 外部配置（机器码、Kiro IDE 端点、自动同意 AI 操作、桌面 agent）由主进程在初始化时自动还原，
+ * 旧版本写进用户机器上的外部配置由主进程在启动时自动还原，
  * 确认框里不逐条列出，只说清楚会删掉什么。
  */
 function resetAll(): void {
   confirmDanger({
     title: '初始化',
     content: h('div', [
-      h('p', { style: CONFIRM_LINE }, '删除全部账号、API Key、设置、本地反代配置与反代 API Key、日志、历史记录和备份目录里的所有备份，和初次安装时一样。'),
+      h('p', { style: CONFIRM_LINE }, '删除全部账号、设置、日志、历史记录和备份目录里的所有备份，和初次安装时一样。'),
       h('p', { style: CONFIRM_LINE }, '该操作不可撤销，完成后应用自动重启。')
     ]),
     okText: '确认初始化',
@@ -551,7 +541,7 @@ function resetAll(): void {
         </a-form-item>
         <a-form-item label="隐私打码" class="field-inline">
           <SettingSwitch field="privacyMode" />
-          <span class="muted">列表与详情中隐藏邮箱、昵称、API Key 等隐私信息</span>
+          <span class="muted">列表与详情中隐藏邮箱与备注</span>
         </a-form-item>
         <a-form-item label="积分两位小数">
           <SettingSwitch field="usagePrecision" />
@@ -565,12 +555,6 @@ function resetAll(): void {
           <SettingSwitch field="autoRefresh" />
           <span class="muted">
             自动检测即将过期的账号并刷新 token，避免无谓轮换 Refresh Token
-          </span>
-        </a-form-item>
-        <a-form-item label="IDE 主动续期" class="field-inline">
-          <SettingSwitch field="proactiveRenewalEnabled" />
-          <span class="muted">
-            在 IDE 激活账号的 token 剩 ~15 分钟时抢先 refresh，让 Kiro IDE 永远不自己 refresh
           </span>
         </a-form-item>
         <a-form-item label="密钥过期提前量" class="field-inline">
@@ -654,10 +638,6 @@ function resetAll(): void {
           把请求按固定节奏摊开，是规避上游限流的主要手段。
         </li>
         <li>手动刷新单个账号时，如果它在池子里会被一并移除，不会被池子再刷一遍。</li>
-        <li>
-          主动续期只对 IDE 当前激活的那一个账号维护定时器，续期成功后写回磁盘并刷新界面；
-          该账号一旦不再是 IDE 当前账号就自动停止，交给 IDE 自身兜底。
-        </li>
       </ul>
     </a-card>
 
@@ -779,165 +759,6 @@ function resetAll(): void {
       </ul>
     </a-card>
 
-    <a-card size="small" title="API Key 刷新" style="margin-bottom: 16px">
-      <a-form v-bind="FORM_LAYOUT">
-        <a-form-item label="自动刷新用量" class="field-inline">
-          <SettingSwitch field="autoRefreshApiKeyUsage" />
-          <span class="muted">
-            定期同步全部 API Key 的订阅类型与积分用量，默认开启
-          </span>
-        </a-form-item>
-        <a-form-item label="用量刷新间隔" class="field-inline">
-          <a-input-number
-            :value="settings.apiKeyUsageRefreshInterval"
-            :min="1"
-            :max="600"
-            :step="5"
-            addon-after="分钟"
-            style="width: 180px"
-            :disabled="!settings.autoRefreshApiKeyUsage"
-            @change="(v: unknown) => updateNumber('apiKeyUsageRefreshInterval', v)"
-          />
-          <span class="muted">
-            默认每 5 分钟同步一次
-            <span class="next-refresh">{{ nextApiKeyUsageRefreshText }}</span>
-          </span>
-        </a-form-item>
-        <a-form-item label="批量并发" class="field-inline">
-          <a-input-number
-            :value="settings.apiKeyRefreshConcurrency"
-            :min="1"
-            :max="20"
-            style="width: 180px"
-            @change="(v: unknown) => updateNumber('apiKeyRefreshConcurrency', v)"
-          />
-          <span class="muted">每批同时同步的 API Key 数量，并发过高容易被限流</span>
-        </a-form-item>
-        <a-form-item label="删除前确认" class="field-inline">
-          <SettingSwitch field="confirmBeforeDeleteApiKey" />
-          <span class="muted">删除 API Key 前弹出二次确认</span>
-        </a-form-item>
-      </a-form>
-      <ul class="tips">
-        <li>首次开启或距离上次同步已超过间隔时，会在应用启动后自动补跑一轮。</li>
-        <li>窗口最小化到托盘、电脑睡眠唤醒后，错过的轮次会自动补跑。</li>
-        <li>同步失败会保留上次成功的订阅与额度，仅更新错误状态。</li>
-      </ul>
-    </a-card>
-
-    <a-card size="small" title="网络" style="margin-bottom: 16px">
-      <a-form v-bind="FORM_LAYOUT">
-        <a-form-item label="用量接口">
-          <a-radio-group
-            :value="settings.usageApiType"
-            @change="(e: any) => update({ usageApiType: e.target.value })"
-          >
-            <a-radio value="rest">REST（q.*.amazonaws.com，推荐）</a-radio>
-            <a-radio value="cbor">CBOR（app.kiro.dev 门户）</a-radio>
-          </a-radio-group>
-        </a-form-item>
-        <a-form-item label="启用代理">
-          <SettingSwitch field="proxyEnabled" />
-        </a-form-item>
-        <a-form-item label="代理地址">
-          <a-input-group compact>
-            <a-input
-              v-model:value="proxyDraft"
-              placeholder="http://127.0.0.1:7890"
-              style="width: 300px"
-            />
-            <a-button type="primary" @click="saveProxy">保存</a-button>
-          </a-input-group>
-          <div class="muted" style="font-size: 12px">
-            留空则回退到系统环境变量 HTTPS_PROXY / HTTP_PROXY
-          </div>
-        </a-form-item>
-      </a-form>
-    </a-card>
-
-    <a-card size="small" title="内置浏览器" style="margin-bottom: 16px">
-      <a-form v-bind="FORM_LAYOUT">
-        <a-form-item label="浏览器地区" class="field-inline">
-          <a-select
-            :value="localeSelectValue"
-            :options="localeSelectOptions"
-            show-search
-            :filter-option="filterLocaleOption"
-            :get-popup-container="bodyPopupContainer"
-            style="width: 260px"
-            @change="(v: unknown) => onLocaleSelect(String(v))"
-          />
-          <span class="restart-hint">修改地区后需要重启应用才能完全生效</span>
-        </a-form-item>
-        <a-form-item v-if="localeCustomMode" label="自定义标签" class="field-inline">
-          <a-input-group compact>
-            <a-input
-              v-model:value="localeDraft"
-              placeholder="例如 zh-Hant-HK"
-              style="width: 180px"
-              @press-enter="savePortalLocale"
-            />
-            <a-button type="primary" @click="savePortalLocale">保存</a-button>
-          </a-input-group>
-          <span class="muted">当前生效：{{ portalLocale }}</span>
-        </a-form-item>
-      </a-form>
-      <ul class="tips">
-        <li>作用于应用内打开的网页，以及「前往官网」拉起的外部 Chrome；决定 Accept-Language 与页面区域，影响显示的语言与价格币种。</li>
-        <li>下拉支持搜索，可按地区名或语言标签筛选；选「自定义」后可填任意 BCP 47 标签。</li>
-        <li>外部 Chrome 每次打开都是新启动，改完下次点开即生效；应用内网页的 navigator.language 由启动参数决定，需重启应用。</li>
-        <li>不改变本应用自身的界面语言，也不影响账号所属的 AWS 区域。</li>
-      </ul>
-    </a-card>
-
-    <a-card size="small" title="批量导入" style="margin-bottom: 16px">
-      <a-form v-bind="FORM_LAYOUT">
-        <a-form-item label="并发数" class="field-inline">
-          <a-input-number
-            :value="settings.importConcurrency"
-            :min="1"
-            :max="100"
-            :step="5"
-            style="width: 180px"
-            @change="(v: unknown) => update({ importConcurrency: clampImportConcurrency(v) })"
-          />
-          <span class="muted">
-            同时验证的账号数量，过大可能导致 API 限流
-          </span>
-        </a-form-item>
-      </a-form>
-      <ul class="tips">
-        <li>建议范围 10-100。设置过大可能导致大量「验证失败」，设置过小则导入速度较慢。</li>
-        <li>导入几千条时会按这个并发分批校验，不会一次性发起全部请求。</li>
-        <li>与「账号刷新」里的批量并发相互独立，互不影响。</li>
-      </ul>
-    </a-card>
-
-    <a-card size="small" title="系统托盘" style="margin-bottom: 16px">
-      <a-form v-bind="FORM_LAYOUT">
-        <a-form-item label="启用系统托盘" class="field-inline">
-          <SettingSwitch field="trayEnabled" />
-          <span class="muted">在系统托盘显示图标</span>
-        </a-form-item>
-        <a-form-item label="关闭按钮行为" class="field-inline">
-          <a-select
-            :value="closeAction"
-            :options="closeActionOptions"
-            :disabled="settings.trayEnabled === false"
-            :get-popup-container="bodyPopupContainer"
-            style="width: 180px"
-            @change="(v: unknown) => update({ closeAction: v as AppSettings['closeAction'] })"
-          />
-          <span class="muted">点击关闭按钮时的行为</span>
-        </a-form-item>
-      </a-form>
-      <ul class="tips">
-        <li>双击托盘图标可以显示主窗口</li>
-        <li>右键托盘图标可以显示菜单</li>
-        <li>托盘菜单可以查看当前账户信息和用量</li>
-      </ul>
-    </a-card>
-
     <a-card size="small" title="数据管理" style="margin-bottom: 16px">
       <a-form v-bind="FORM_LAYOUT">
         <a-form-item label="数据目录">
@@ -967,12 +788,12 @@ function resetAll(): void {
 
       </a-form>
       <ul class="tips">
-        <li>导出内容：{{ BACKUP_SCOPE }}。设置项、反代监听配置等不在其中。</li>
-        <li>导出为明文 .json 文件，包含账号凭证与各类 API Key，请妥善保管，不要发给他人。</li>
-        <li>导入只接受本应用导出的 .json 文件，替换本机对应的账号、API Key、用量记录与反代 API Key，其余数据保持不变；完成后应用自动重启。备份目录里的文件也可以直接导入。</li>
+        <li>导出内容：{{ BACKUP_SCOPE }}。设置项、日志等不在其中。</li>
+        <li>导出为明文 .json 文件，包含账号凭证，请妥善保管，不要发给他人。</li>
+        <li>导入只接受本应用导出的 .json 文件，替换本机对应的账号与积分变化记录，其余数据保持不变；完成后应用自动重启。备份目录里的文件也可以直接导入。</li>
         <li>
-          初始化会先还原本应用改过的外部配置（机器码、Kiro IDE 端点、自动同意 AI 操作、已写入的桌面 agent），
-          再清掉全部数据、日志、历史记录和备份目录，和初次安装时一样，完成后应用自动重启。
+          初始化会先还原旧版本留在本机的 IDE 端点等外部配置，再清掉全部数据、日志、历史记录和备份目录，
+          和初次安装时一样，完成后应用自动重启。
         </li>
       </ul>
     </a-card>

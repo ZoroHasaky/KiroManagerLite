@@ -7,7 +7,6 @@ import {
   EyeInvisibleOutlined,
   EyeOutlined,
   GlobalOutlined,
-  KeyOutlined,
   ThunderboltOutlined,
   WalletOutlined
 } from '@ant-design/icons-vue'
@@ -33,12 +32,11 @@ import type { Account } from '@shared/types'
 
 const props = defineProps<{ account: Account | null }>()
 /**
- * 测活与 API Key 管理原本在卡片动作区，现在收敛到这里。
- * 由父组件负责关掉本弹窗再打开对应弹窗——两层 antd 弹窗叠着开时，
- * z-index 是全局自增的，CreateApiKeyModal 里又写死了内层弹窗的层级，
- * 叠起来容易压错层，交给父组件串行切换最稳。
+ * 测活原本在卡片动作区，现在收敛到这里。
+ * 由父组件负责关掉本弹窗再打开测活弹窗——两层 antd 弹窗叠着开时
+ * z-index 是全局自增的，叠起来容易压错层，交给父组件串行切换最稳。
  */
-const emit = defineEmits<{ close: []; test: [account: Account]; 'create-api-key': [account: Account] }>()
+const emit = defineEmits<{ close: []; test: [account: Account] }>()
 
 const accountsStore = useAccountsStore()
 const settingsStore = useSettingsStore()
@@ -159,17 +157,15 @@ async function openSubscriptionPortal(): Promise<void> {
   }
 }
 
-async function act(kind: 'refresh' | 'check' | 'switch'): Promise<void> {
+async function act(kind: 'refresh' | 'check'): Promise<void> {
   const target = account.value
   if (!target) return
   busy.value = true
   try {
     if (kind === 'refresh') {
       notifyResult(await accountsStore.refreshToken(target.id), { success: '密钥已刷新' })
-    } else if (kind === 'check') {
-      notifyResult(await accountsStore.checkStatus(target.id), { success: '用量已更新' })
     } else {
-      notifyResult(await accountsStore.switchTo(target.id), { success: '已写入 Kiro IDE' })
+      notifyResult(await accountsStore.checkStatus(target.id), { success: '用量已更新' })
     }
   } finally {
     busy.value = false
@@ -189,8 +185,7 @@ async function act(kind: 'refresh' | 'check' | 'switch'): Promise<void> {
   >
     <template v-if="account">
       <a-space style="margin-bottom: 16px" wrap>
-        <a-button type="primary" :loading="busy" @click="act('switch')">切换到此账号</a-button>
-        <a-button :loading="busy" @click="act('refresh')">刷新密钥</a-button>
+        <a-button type="primary" :loading="busy" @click="act('refresh')">刷新密钥</a-button>
         <a-button :loading="busy" @click="act('check')">刷新用量</a-button>
         <a-tooltip title="用该账号凭证在 Chrome 无痕窗口登录 Kiro 官网后台">
           <a-button :loading="portalOpening" @click="openPortal">
@@ -208,12 +203,6 @@ async function act(kind: 'refresh' | 'check' | 'switch'): Promise<void> {
           <a-button @click="emit('test', account)">
             <template #icon><ThunderboltOutlined /></template>
             测活
-          </a-button>
-        </a-tooltip>
-        <a-tooltip title="列出该账号已创建的 Kiro API Key，可直接新建">
-          <a-button @click="emit('create-api-key', account)">
-            <template #icon><KeyOutlined /></template>
-            API Key 管理
           </a-button>
         </a-tooltip>
         <a-button @click="exportOpen = true">
@@ -241,7 +230,6 @@ async function act(kind: 'refresh' | 'check' | 'switch'): Promise<void> {
         </a-descriptions-item>
         <a-descriptions-item label="状态">
           <a-tag :color="STATUS_META[account.status].color">{{ STATUS_META[account.status].text }}</a-tag>
-          <a-tag v-if="account.isActive" color="green">IDE 当前</a-tag>
         </a-descriptions-item>
         <a-descriptions-item label="登录方式">
           <a-tag :color="IDP_META[account.idp].color">{{ IDP_META[account.idp].text }}</a-tag>

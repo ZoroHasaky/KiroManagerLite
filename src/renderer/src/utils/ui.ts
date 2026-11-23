@@ -147,17 +147,5 @@ export function confirmDelete(options: {
   })
 }
 
-/** API Key 设为当前：普通 primary 确认，label 必须由调用方按隐私设置处理。 */
-export function confirmUseApiKey(label: string, onOk: () => Promise<unknown>): void {
-  Modal.confirm({
-    title: '使用此 API Key（设为当前）',
-    content: `确认使用 ${label} 并设为当前 API Key？`,
-    okText: '设为当前',
-    okType: 'primary',
-    cancelText: '取消',
-    onOk
-  })
-}
-
 /** 弹层挂到 body，避免被顶栏或滚动容器裁剪 */
 export const bodyPopupContainer = (): HTMLElement => document.body

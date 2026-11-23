@@ -4,99 +4,49 @@ import { app } from 'electron'
 import * as path from 'path'
 import { copyFileSync, existsSync, mkdirSync } from 'fs'
 import {
-  DEFAULT_KEY_GATEWAY_DATA,
   DEFAULT_PRIMARY_COLOR,
   DEFAULT_SETTINGS,
   type AccountStoreData,
   type AppSettings,
-  DEFAULT_PROXY_CONFIG,
-  type KeyGatewayData,
-  type MachineIdBackup,
-  type ProxyAccountUsage,
-  type ProxyApiKey,
-  type ProxyConfig,
-  type ProxyKeyUsage,
-  type ProxyModelCache,
   type SubscriptionType
 } from '../shared/types'
 import { normalizeSubscriptionType } from '../shared/subscription'
 import { normalizeNotePresets } from '../shared/notePresets'
 
-/** permissions.yaml 开启前的原始状态 */
-export interface ShellApproveYamlBackup {
-  /** 备份时文件是否存在；false 表示关闭时应删除该文件 */
-  existed: boolean
-  content: string
-}
-
-/** Kiro IDE settings.json 里命令审批相关键的原值 */
-export interface ShellApproveSettingsBackup {
-  path: string
-  /** 原本是否存在该键；false 表示关闭时应删除该键而不是写空数组 */
-  hadTrustedCommands: boolean
-  trustedCommands?: unknown
-  hadCommandDenylist: boolean
-  commandDenylist?: unknown
-}
-
-/** 开启「自动同意所有 Shell 命令」前的完整配置快照 */
-export interface ShellApproveBackup {
-  savedAt: number
-  yaml?: ShellApproveYamlBackup
-  settings?: ShellApproveSettingsBackup
-}
-
-/** 写入桌面 agent 配置前的原始文件快照，用于「还原」 */
-export interface ProxyClientBackupFile {
+/** 旧版「一键接入客户端」写过的配置文件快照，仅用于升级时还原 */
+export interface LegacyClientBackupFile {
   path: string
   /** 写入前文件是否存在；false 表示还原时应删除该文件 */
   existed: boolean
   content: string
 }
 
-/** 本应用写过 KIRO_API_KEY 的记录，移除时据此还原 */
-export interface KiroCliEnvBackup {
-  writtenAt: number
-  /** macOS / Linux：写过的启动文件；created 表示文件是我们新建的，移除后为空就删掉 */
-  files: { path: string; created: boolean }[]
-  /** Windows：第一次写入前用户原有的值（没有则为 null），移除时写回 */
-  previousWindowsValue: string | null
+export interface LegacyClientBackup {
+  savedAt: number
+  files: LegacyClientBackupFile[]
 }
 
-export interface ProxyClientBackup {
-  savedAt: number
-  files: ProxyClientBackupFile[]
+/** 旧版写入 KIRO_API_KEY 的记录，仅用于升级时移除 */
+export interface LegacyCliEnvBackup {
+  writtenAt: number
+  files: { path: string; created: boolean }[]
+  previousWindowsValue: string | null
 }
 
 interface Schema {
   accountData: AccountStoreData
   settings: AppSettings
-  keyData: KeyGatewayData
-  shellApproveBackup: ShellApproveBackup | null
-  /** 原始机器码备份：首次重置前自动写入，用户手动备份时覆盖 */
-  machineIdBackup: MachineIdBackup | null
-  /** 本地反代配置 */
-  proxyConfig: ProxyConfig
-  /** 升级前的反代按账号用量；现存于 proxyUsageStore，这里只在迁移时读一次 */
-  proxyUsage?: ProxyAccountUsage[]
-  /** 从账号拉回的模型列表 */
-  proxyModels: ProxyModelCache | null
-  /** Codex 模型目录的模板条目（取自本机 Codex 自带目录） */
-  proxyCodexTemplate: Record<string, unknown> | null
-  /** 各桌面 agent 被改写前的配置备份，按目标分别保存 */
-  proxyClientBackups: Record<string, ProxyClientBackup>
-  /** 用户手动指定的客户端安装位置（.app / .exe / 命令行可执行文件），按目标保存 */
-  proxyClientPaths: Record<string, string>
-  /** 自定义的反代 API Key（默认 Key 仍在 proxyConfig.apiKey） */
-  proxyApiKeys: ProxyApiKey[]
-  /** 升级前的反代按 Key 用量；现存于 proxyUsageStore，这里只在迁移时读一次 */
-  proxyKeyUsage?: Record<string, ProxyKeyUsage>
-  /** 一次性迁移标记：载荷上限默认值 900 → 153600，见 migratePayloadDefault */
-  proxyPayloadDefault153600: boolean
-  /** 一次性迁移标记：强制校验 API Key 统一打开，见 migratePayloadDefault */
-  proxyRequireKeyDefault: boolean
-  /** 写入 Kiro CLI 环境变量的记录，见 kiroCliEnv */
-  kiroCliEnvBackup: KiroCliEnvBackup | null
+  /*
+   * 以下键是旧版本（≤1.2.5）写下的，本版本不再产生新的，只在启动时读一次做外部配置还原。
+   * 键名必须与旧版完全一致，否则读不到已落盘的数据、用户机器上的痕迹就还原不了。
+   * 类型用 unknown / 宽松形状：由旧版本写出，不能假定内部结构一定正确，用到的地方逐个校验。
+   */
+  keyData?: unknown
+  shellApproveBackup?: unknown
+  machineIdBackup?: unknown
+  kiroCliEnvBackup?: LegacyCliEnvBackup | null
+  proxyClientBackups?: Record<string, LegacyClientBackup>
+  proxyClientPaths?: Record<string, string>
   /**
    * 上次退出时的窗口位置与尺寸。
    *
@@ -115,7 +65,7 @@ export interface WindowBounds {
   maximized: boolean
 }
 
-const EMPTY_DATA: AccountStoreData = { version: 1, accounts: [], activeAccountId: null }
+const EMPTY_DATA: AccountStoreData = { version: 1, accounts: [] }
 
 const STORE_NAME = 'kiro-account-lite'
 
@@ -154,26 +104,14 @@ const store = new Store<Schema>({
   defaults: {
     accountData: EMPTY_DATA,
     settings: DEFAULT_SETTINGS,
-    keyData: DEFAULT_KEY_GATEWAY_DATA,
-    shellApproveBackup: null,
-    machineIdBackup: null,
-    proxyConfig: DEFAULT_PROXY_CONFIG,
-    proxyModels: null,
-    proxyCodexTemplate: null,
-    proxyClientBackups: {},
-    proxyClientPaths: {},
-    proxyApiKeys: [],
-    proxyPayloadDefault153600: false,
-    proxyRequireKeyDefault: false,
-    kiroCliEnvBackup: null,
     windowBounds: null
   }
 })
 
 /*
  * 内存快照：electron-store（conf）的每次 get 都会同步读文件、用 pbkdf2 派生密钥、
- * 解密、再整份 JSON.parse；这份文件装着全部账号，反代和 Key 网关每个请求都要读好几次，
- * 直接读会让主线程（界面与 IPC）每次卡上几毫秒。主进程是这个文件唯一的写入方，
+ * 解密、再整份 JSON.parse；这份文件装着全部账号，直接读会让主线程（界面与 IPC）
+ * 每次卡上几毫秒。主进程是这个文件唯一的写入方，
  * 所以只在首次读取时解密一次，之后读写都走内存快照，写入照常同步落盘。
  *
  * read 返回深拷贝：调用方拿到的始终是独立对象（语义与 store.get 一致），
@@ -189,7 +127,7 @@ function read<K extends keyof Schema>(key: K): Schema[K] {
 
 /**
  * 不拷贝，直接返回快照里的对象，只给只读调用方用。
- * 账号数据约 2MB，深拷贝一次在主线程上要 1ms 多；反代每个请求选号都要读一遍，
+ * 账号数据约 2MB，深拷贝一次在主线程上要 1ms 多；
  * 走这条路省掉这次拷贝。返回值不能修改，要改的调用方用 read（经 write 才生效）。
  */
 function peek<K extends keyof Schema>(key: K): Readonly<Schema[K]> {
@@ -202,7 +140,7 @@ function peek<K extends keyof Schema>(key: K): Readonly<Schema[K]> {
  *
  * 为什么要合并：conf 的每次 set 都要把整个文件读回来、pbkdf2 派生密钥、解密、JSON.parse，
  * 改完再派生一次密钥、加密、整份写盘。这个文件装着全部账号，上千个账号时一次就是上百毫秒的主线程阻塞；
- * 批量同步 Key、批量测活、反代刷新 Token 时每秒可能写几十次，界面与 IPC 会被卡住。
+ * 批量刷新、批量测活时每秒可能写几十次，界面与 IPC 会被卡住。
  * 合并后同一段时间内的多次修改只落一次盘，内容和逐次写完全一致（写的就是最新快照）。
  *
  * 只延迟 STORE_FLUSH_MS：正常退出、导入后重启、清除数据前都会立即 flushStore，
@@ -250,209 +188,71 @@ export function resetStoreData(): void {
   snapshot = null
 }
 
-/** 有改写前快照的桌面 agent（即当前写入过、还没还原的那些） */
-export function proxyClientBackupTargets(): string[] {
-  const all = read('proxyClientBackups') as Record<string, ProxyClientBackup> | undefined
-  return Object.keys(all ?? {})
-}
-
-export function getProxyApiKeys(): ProxyApiKey[] {
-  const raw = read('proxyApiKeys') as ProxyApiKey[] | undefined
-  return Array.isArray(raw) ? raw.filter((k) => k && typeof k.key === 'string') : []
-}
-
-export function setProxyApiKeys(keys: ProxyApiKey[]): void {
-  write('proxyApiKeys', keys)
-}
-
-
-export function getProxyCodexTemplate(): Record<string, unknown> | null {
-  const raw = read('proxyCodexTemplate') as Record<string, unknown> | null | undefined
-  return raw && typeof raw === 'object' ? raw : null
-}
-
-export function setProxyCodexTemplate(template: Record<string, unknown> | null): void {
-  write('proxyCodexTemplate', template)
-}
-
-export function getProxyModels(): ProxyModelCache | null {
-  const raw = read('proxyModels') as ProxyModelCache | null | undefined
-  return raw && Array.isArray(raw.models) && raw.models.length ? raw : null
-}
-
-export function setProxyModels(cache: ProxyModelCache): void {
-  write('proxyModels', cache)
-}
-
-// ============ 本地反代 ============
+// ============ 旧版本遗留数据（升级清理用）============
 
 /**
- * 一次性迁移：磁盘上存的载荷上限若是旧默认值 900，迁到当前默认值 153600。
+ * 旧版本留在主库里的「本应用改过用户机器上哪些东西」的记录。
  *
- * 只靠 DEFAULT_PROXY_CONFIG 不够：saveProxyConfig 每次都把「默认值 + 改动」整份写回，
- * 只要保存过任何一项参数，900 就已经作为实值落了盘，默认值盖不上去。
- * 这里把「恰好等于旧默认值」的存值当成没设置过，删掉让它回落到当前默认。
- *
- * 只跑一次（用标记记住）：迁移之后用户如果自己把它设成 900，那是有意的，不能再被改掉。
+ * 本版本已经不再提供对应的功能，但如果这些记录非空，说明用户机器上还留着
+ * 旧版本写入的痕迹（IDE 端点、桌面 agent 配置、KIRO_API_KEY），启动时要还原。
  */
-let payloadMigrated = false
-
-function migratePayloadDefault(): void {
-  // 每次读配置都会经过这里，查过一次就记在内存里
-  if (payloadMigrated) return
-  payloadMigrated = true
-  migrateRequireKeyDefault()
-  if (read('proxyPayloadDefault153600')) return
-  const raw = read('proxyConfig') as Partial<ProxyConfig> | undefined
-  if (raw && raw.payloadLimitKB === 900) {
-    const { payloadLimitKB: _old, ...rest } = raw
-    // 存的是缺了这个键的对象，读取时由 DEFAULT_PROXY_CONFIG 补上新默认值
-    write('proxyConfig', rest as ProxyConfig)
-  }
-  write('proxyPayloadDefault153600', true)
-}
-
-/**
- * 一次性迁移：强制校验 API Key 默认打开。
- * 与载荷上限同理，保存过任何参数后 requireApiKey 已作为实值落盘，默认值盖不上去，
- * 所以对已有配置统一打开一次。之后用户自己关掉是有意的，不再改回来。
- */
-function migrateRequireKeyDefault(): void {
-  if (read('proxyRequireKeyDefault')) return
-  const raw = read('proxyConfig') as Partial<ProxyConfig> | undefined
-  if (raw && raw.requireApiKey === false) write('proxyConfig', { ...raw, requireApiKey: true } as ProxyConfig)
-  write('proxyRequireKeyDefault', true)
-}
-
-export function getProxyConfig(): ProxyConfig {
-  migratePayloadDefault()
-  const merged = { ...DEFAULT_PROXY_CONFIG, ...(read('proxyConfig') as Partial<ProxyConfig>) }
-  /*
-   * 界面上没有「一律用默认模型」这个选项，模型一律跟随客户端。
-   * 配置里存着 force 的用户没有地方能改回来，所以在唯一的读取入口上归一掉，
-   * 否则他们会一直被锁在默认模型上，客户端里怎么切都没用。
+export interface LegacyExternalState {
+  /** 是否需要执行清理 */
+  pending: boolean
+  /** 旧版写入 KIRO_API_KEY 的记录；没有则为 null */
+  cliEnv: LegacyCliEnvBackup | null
+  /** 旧版写过的桌面 agent 配置快照 */
+  clientBackups: { target: string; backup: LegacyClientBackup }[]
+  /**
+   * 旧版接管 IDE 端点前记录的原始值（krs / cps 两个键）。
+   * 有就按它精确还原，比一律清成空数组更接近用户原本的配置。
    */
-  merged.modelMode = 'client'
-  return normalizeAccountStrategy(merged)
+  originalEndpoints?: { krs?: unknown; cps?: unknown }
 }
 
-/**
- * 已存配置里的旧调度字段换算成当前策略，保证选号结果不变：
- *  - single + accountId      → selected + [accountId]
- *  - roundRobin + poolIds 非空 → selected + poolIds（旧字段的含义就是在这几个号里轮询）
- * 换算后删掉旧字段；下次保存时写回的就是新形状，这里不会再命中。
- */
-function normalizeAccountStrategy(config: ProxyConfig): ProxyConfig {
-  const legacy = config as ProxyConfig & { accountId?: string | null; poolIds?: string[] }
-  const mode = legacy.accountMode as string
-  if (mode === 'single') {
-    config.accountMode = 'selected'
-    if (!config.accountIds.length && legacy.accountId) config.accountIds = [legacy.accountId]
-  } else if (mode === 'roundRobin' && legacy.poolIds?.length && !config.accountIds.length) {
-    config.accountMode = 'selected'
-    config.accountIds = [...legacy.poolIds]
-  } else if (mode !== 'roundRobin' && mode !== 'group' && mode !== 'selected') {
-    config.accountMode = 'roundRobin'
+export function readLegacyExternalState(): LegacyExternalState {
+  const raw = store.store
+  const keyData = raw.keyData as { enabled?: unknown; originalEndpoints?: unknown } | undefined
+  const backups = raw.proxyClientBackups ?? {}
+  const clientBackups: { target: string; backup: LegacyClientBackup }[] = []
+  for (const [target, backup] of Object.entries(backups)) {
+    if (backup && Array.isArray(backup.files)) clientBackups.push({ target, backup })
   }
-  if (config.accountSource !== 'apiKey') config.accountSource = 'account'
-  delete legacy.accountId
-  delete legacy.poolIds
-  return config
-}
-
-export function saveProxyConfig(patch: Partial<ProxyConfig>): ProxyConfig {
-  const merged = { ...getProxyConfig(), ...patch }
-  write('proxyConfig', merged)
-  return merged
-}
-
-/**
- * 取出主库里残留的反代用量统计并从主库删掉。
- * 统计存在单独的 kiro-proxy-usage 文件（见 proxyUsageStore），这里只在首次载入时调一次，
- * 把主库里残留的数据交过去。
- */
-export function takeLegacyProxyUsage(): {
-  accounts: ProxyAccountUsage[]
-  keys: Record<string, ProxyKeyUsage>
-} {
-  const accounts = read('proxyUsage') as ProxyAccountUsage[] | undefined
-  const keys = read('proxyKeyUsage') as Record<string, ProxyKeyUsage> | undefined
-  if (store.has('proxyUsage') || store.has('proxyKeyUsage')) {
-    store.delete('proxyUsage')
-    store.delete('proxyKeyUsage')
-    snapshot = null
-  }
+  const cliEnv = raw.kiroCliEnvBackup ?? null
+  const original = keyData?.originalEndpoints as
+    | { krs?: unknown; cps?: unknown }
+    | undefined
+  const gatewayTakeover = keyData?.enabled === true || original !== undefined
   return {
-    accounts: Array.isArray(accounts) ? accounts : [],
-    keys: keys && typeof keys === 'object' ? keys : {}
+    // 只要有一类痕迹存在就值得跑一次；跑完清空记录，之后不再命中
+    pending: gatewayTakeover || clientBackups.length > 0 || !!cliEnv,
+    cliEnv: cliEnv && Array.isArray(cliEnv.files) ? cliEnv : null,
+    clientBackups,
+    originalEndpoints: original
   }
 }
 
-export function getProxyClientBackup(target: string): ProxyClientBackup | null {
-  const all = read('proxyClientBackups') as Record<string, ProxyClientBackup> | undefined
-  const entry = all?.[target]
-  return entry && Array.isArray(entry.files) ? entry : null
-}
-
-export function getProxyClientPaths(): Record<string, string> {
-  const raw = read('proxyClientPaths') as Record<string, string> | undefined
-  return raw && typeof raw === 'object' ? raw : {}
-}
-
-/** 传 null 表示清掉手动指定，回到自动检测 */
-export function setProxyClientPath(target: string, value: string | null): void {
-  const all = { ...getProxyClientPaths() }
-  if (value) all[target] = value
-  else delete all[target]
-  write('proxyClientPaths', all)
-}
-
-export function setProxyClientBackup(target: string, backup: ProxyClientBackup | null): void {
-  const all = { ...((read('proxyClientBackups') as Record<string, ProxyClientBackup>) ?? {}) }
-  if (backup) all[target] = backup
-  else delete all[target]
-  write('proxyClientBackups', all)
-}
-
-export function getKiroCliEnvBackup(): KiroCliEnvBackup | null {
-  const raw = read('kiroCliEnvBackup') as KiroCliEnvBackup | null | undefined
-  if (!raw || typeof raw !== 'object' || !Array.isArray(raw.files)) return null
-  return raw
-}
-
-export function setKiroCliEnvBackup(backup: KiroCliEnvBackup | null): void {
-  write('kiroCliEnvBackup', backup)
-}
-
-export function getMachineIdBackup(): MachineIdBackup | null {
-  const raw = read('machineIdBackup') as MachineIdBackup | null | undefined
-  if (!raw || typeof raw !== 'object' || !raw.ids || typeof raw.ids !== 'object') return null
-  return raw
-}
-
-export function setMachineIdBackup(backup: MachineIdBackup | null): void {
-  write('machineIdBackup', backup)
-}
-
-/** 权限配置备份：仅在开关开启期间存在，关闭还原后清空 */
-export function getShellApproveBackup(): ShellApproveBackup | null {
-  const raw = read('shellApproveBackup') as Record<string, unknown> | null | undefined
-  if (!raw || typeof raw !== 'object') return null
-
-  // 1.0.4 以下版本写的备份只含 permissions.yaml、字段平铺在顶层，读取时换算成当前形状
-  if (typeof raw.content === 'string' && !raw.yaml && !raw.settings) {
-    return {
-      savedAt: Number(raw.savedAt) || Date.now(),
-      yaml: { existed: raw.existed === true, content: raw.content }
-    }
+/** 清理完成后把这些键从主库里彻底删掉，避免每次启动重复判断 */
+export function clearLegacyExternalState(): void {
+  // 先把待写的改动落盘：下面要直接操作底层 store，快照会被丢弃
+  flushStore()
+  const keys = [
+    'keyData',
+    'shellApproveBackup',
+    'machineIdBackup',
+    'kiroCliEnvBackup',
+    'proxyClientBackups',
+    'proxyClientPaths'
+  ] as const
+  for (const key of keys) {
+    if (store.has(key)) store.delete(key)
   }
-  if (!raw.yaml && !raw.settings) return null
-  return raw as unknown as ShellApproveBackup
+  // 直接改过底层 store，快照要作废，否则后续读到的还是旧内容
+  snapshot = null
+  dirtyKeys.clear()
 }
 
-export function setShellApproveBackup(backup: ShellApproveBackup | null): void {
-  write('shellApproveBackup', backup)
-}
+// ============ 账号数据 ============
 
 /** 当前有效的订阅档位，用于识别磁盘上遗留的废弃值 */
 const VALID_SUBSCRIPTION_TYPES = new Set<string>([
@@ -478,8 +278,7 @@ const VALID_SUBSCRIPTION_TYPES = new Set<string>([
  */
 /**
  * 已对齐过的账号表（按对象身份记）。快照里的账号表只在写入时整体换新，
- * 同一个对象对齐一次就够了；反代每个请求都经 viewAccountData 读一次，
- * 不记的话上千个账号每个请求都要整表再扫一遍。
+ * 同一个对象对齐一次就够了；不记的话每次读取都要整表再扫一遍。
  */
 const alignedTables = new WeakSet<AccountStoreData>()
 
@@ -514,7 +313,7 @@ export function getAccountData(): AccountStoreData {
 }
 
 /**
- * 账号数据的只读视图（不拷贝），给反代选号、健康检查、IPC 下发这类只读不写的场景。
+ * 账号数据的只读视图（不拷贝），给健康检查、IPC 下发这类只读不写的场景。
  * 订阅档位同样会对齐：对齐是在快照上就地改写并落盘，和走 getAccountData 结果一致。
  */
 export function viewAccountData(): Readonly<AccountStoreData> {
@@ -527,7 +326,7 @@ export async function setAccountData(data: AccountStoreData): Promise<void> {
   write('accountData', data)
 }
 
-/** 从主进程最新快照删除账号，避免渲染进程用旧整表覆盖主动续期刚写入的新凭证 */
+/** 从主进程最新快照删除账号，避免渲染进程用旧整表覆盖刚写入的新凭证 */
 export async function deleteAccountData(
   ids: string[]
 ): Promise<{ accounts: AccountStoreData; removed: number }> {
@@ -539,14 +338,7 @@ export async function deleteAccountData(
   const removed = current.accounts.length - remaining.length
   if (!removed) return { accounts: current, removed: 0 }
 
-  const accounts: AccountStoreData = {
-    ...current,
-    accounts: remaining,
-    activeAccountId:
-      current.activeAccountId && remove.has(current.activeAccountId)
-        ? null
-        : current.activeAccountId
-  }
+  const accounts: AccountStoreData = { ...current, accounts: remaining }
   await setAccountData(accounts)
   return { accounts, removed }
 }
@@ -603,56 +395,6 @@ export function getWindowBounds(): WindowBounds | null {
 
 export function setWindowBounds(bounds: WindowBounds): void {
   write('windowBounds', bounds)
-}
-
-// ============ Key 网关数据 ============
-
-/** Key 网关数据的独立副本：调用方可以修改，改完经 setKeyData 落盘 */
-export function getKeyData(): KeyGatewayData {
-  return normalizeKeyData(read('keyData') as Partial<KeyGatewayData> | undefined)
-}
-
-/**
- * Key 网关数据的只读视图，按快照对象身份缓存，写入后自动失效。
- *
- * 网关每转发一个请求都要读当前 Key 与区域，走 getKeyData 就是整表深拷贝再逐条补默认值；
- * 上千个 Key 时这一步每个请求都要好几毫秒。返回值不能修改，要改的调用方用 getKeyData。
- */
-let keyView: { source: unknown; data: KeyGatewayData } | null = null
-
-export function viewKeyData(): Readonly<KeyGatewayData> {
-  const source = peek('keyData')
-  if (keyView?.source !== source) {
-    keyView = { source, data: normalizeKeyData(structuredClone(source) as Partial<KeyGatewayData>) }
-  }
-  return keyView.data
-}
-
-function normalizeKeyData(data: Partial<KeyGatewayData> | undefined): KeyGatewayData {
-  // 用默认值打底，兼容旧数据缺字段
-  const merged: KeyGatewayData = { ...DEFAULT_KEY_GATEWAY_DATA, ...(data ?? {}) }
-  if (!Array.isArray(merged.keys)) merged.keys = []
-  if (!merged.ports || typeof merged.ports.krs !== 'number' || typeof merged.ports.cps !== 'number') {
-    merged.ports = { ...DEFAULT_KEY_GATEWAY_DATA.ports }
-  }
-  // 区域按 Key 各存一份；没有 region 的 Key（1.0.6 以下版本写入）沿用顶层的全局区域
-  const fallbackRegion = String(merged.region || DEFAULT_KEY_GATEWAY_DATA.region).trim()
-  merged.region = fallbackRegion || DEFAULT_KEY_GATEWAY_DATA.region
-  merged.keys = merged.keys.map((entry) =>
-    entry.region ? entry : { ...entry, region: merged.region }
-  )
-  // 当前 Key 只属于已开启的网关；网关关闭或 activeKeyId 指向不存在的 Key 时清空。
-  if (!merged.enabled || !merged.keys.some((entry) => entry.id === merged.activeKeyId)) {
-    merged.activeKeyId = null
-  }
-  return merged
-}
-
-export function setKeyData(data: KeyGatewayData): void {
-  write('keyData', {
-    ...data,
-    activeKeyId: data.enabled ? (data.activeKeyId ?? null) : null
-  })
 }
 
 // ============ 备份目录 ============
