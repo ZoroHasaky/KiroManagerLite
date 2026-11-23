@@ -1463,6 +1463,24 @@ export interface AppSettings {
    * 所以默认关闭，只给「额度已用完、短期不会再动」的账号建议打开。
    */
   skipKeyRefreshAtUsageLimit: boolean
+  /**
+   * 池子刷新的间隔（分钟）：每隔这么久从待刷新池里取一批真正去刷。
+   *
+   * 扫描（判断谁该刷）和刷新（真正发请求）是两条独立的时间线：
+   * 扫描沿用 keyRefreshInterval / usageRefreshInterval，它们只负责把符合条件的账号
+   * 放进池子；真正发请求由这个间隔控制，两个池交替执行。
+   *
+   * 同一出口 IP 短时间集中请求会被 Kiro 限流回 403，把请求按固定节奏摊开是
+   * 最直接的规避手段。调小能更快排空池子，但触发限流的概率也会上升。
+   */
+  poolFlushInterval: number
+  /**
+   * 每次从池子里取多少个账号去刷新。
+   *
+   * 两个池交替执行，所以单个池的实际刷新周期约为 poolFlushInterval × 2。
+   * 取太多等于回到「一次性刷一大批」，取太少则池子排得很长。
+   */
+  poolFlushSize: number
   /** 批量并发 */
   concurrency: number
   /** 用量接口类型 */
@@ -1561,6 +1579,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   idleUsageRefreshInterval: 12,
   // 0 = 关闭：默认不按用量百分比拦截，保持与旧版本一致的行为
   usageRefreshMaxPercent: 0,
+  // 每 5 分钟从池子里取一批去刷；与扫描间隔解耦，专门用来摊平请求
+  poolFlushInterval: 5,
+  // 每次取 20 个；两个池交替，单池实际约 10 分钟轮到一次
+  poolFlushSize: 20,
   concurrency: 5,
   usageApiType: 'rest',
   importConcurrency: 50,

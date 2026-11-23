@@ -154,6 +154,96 @@ const PROXY_CONCURRENCY_CAP = 3
 /** 接口没给 expiresIn 时的兜底有效期（秒） */
 const DEFAULT_EXPIRES_IN = 3600
 
+/**
+ * 池内条目：入池时记下账号的「刷新标记」快照，出队时据此判断中途是否已被刷过。
+ *
+ * 手动刷新成功后也会显式出池（见 dequeueRefresh），这里是第二道保险：
+ * 覆盖「池外其它途径改了凭证」（比如主进程主动续期）导致的那条记录过期。
+ */
+interface RefreshPoolEntry {
+  id: string
+  /** 密钥池是 token 到期时间，用量池是用量数据的时间戳 */
+  stamp: number
+}
+
+/**
+ * 待刷新池：先进先出。
+ *
+ * 扫描只负责入池，刷新另有一个定时任务从队首取几个去刷——两条时间线解耦，
+ * 扫描频率再高也不会带来更多请求。
+ *
+ * 存 id 而不是账号对象：账号数据每次刷新都会整表替换，存快照会读到过期凭证。
+ * `queued` 与 `queue` 同步维护，用来保证同一个账号不会重复入池——只靠数组的
+ * `includes` 在几千个账号时每次都是 O(n²)。
+ */
+interface RefreshPool {
+  queue: RefreshPoolEntry[]
+  queued: Set<string>
+}
+
+function createRefreshPool(): RefreshPool {
+  return { queue: [], queued: new Set() }
+}
+
+/** 取某账号入池时的刷新标记；返回 null 表示它不该进池 */
+type PoolStampOf = (id: string) => number | null
+
+/** 出队判断：这个账号（以及入池时的标记）是否仍然需要刷新 */
+type PoolStillNeeded = (id: string, stamp: number) => boolean
+
+/**
+ * 把待刷账号追加到池尾；已在池里的跳过，不该入池的（账号没了 / 状态变了）直接丢弃。
+ *
+ * @returns 本次真正新入池的数量
+ */
+function enqueueRefreshPool(pool: RefreshPool, ids: string[], stampOf: PoolStampOf): number {
+  let added = 0
+  for (const id of ids) {
+    if (pool.queued.has(id)) continue
+    const stamp = stampOf(id)
+    if (stamp === null) continue
+    pool.queue.push({ id, stamp })
+    pool.queued.add(id)
+    added++
+  }
+  return added
+}
+
+/** 把单个账号从池里摘掉（手动刷新成功后调用）；返回是否真的移除了一条 */
+function removeFromRefreshPool(pool: RefreshPool, id: string): boolean {
+  if (!pool.queued.delete(id)) return false
+  const index = pool.queue.findIndex((entry) => entry.id === id)
+  if (index >= 0) pool.queue.splice(index, 1)
+  return true
+}
+
+/**
+ * 从队首取出至多 limit 个账号，取出的同时从池里移除。
+ *
+ * 用「先进先出」而不是每次重新算一遍该刷谁，是为了让排在后面的账号
+ * 一定能轮到——每次重算的话，同一个账号可能因为排序或状态抖动被反复选中或永远选不到。
+ *
+ * 出队时要再判断一次 stillNeeded：入池到出队之间账号可能已被删除、放进回收站、
+ * 封禁，或者已经被人手动刷过。这些都不该占用本次名额——直接丢弃继续往后取，
+ * 否则「每次 x 个」会被死号与重复项吃掉。
+ */
+function drainRefreshPool(
+  pool: RefreshPool,
+  limit: number,
+  stillNeeded: PoolStillNeeded
+): string[] {
+  // limit 必须有下限：0 或负数会让下面的循环条件永远成立（取不满就一直转）
+  const cap = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 1
+  const taken: string[] = []
+  while (pool.queue.length) {
+    if (taken.length >= cap) break
+    const entry = pool.queue.shift()!
+    pool.queued.delete(entry.id)
+    if (stillNeeded(entry.id, entry.stamp)) taken.push(entry.id)
+  }
+  return taken
+}
+
 export const useAccountsStore = defineStore('accounts', () => {
   const settingsStore = useSettingsStore()
 
@@ -195,6 +285,18 @@ export const useAccountsStore = defineStore('accounts', () => {
     searchScope: 'all',
     queries: []
   })
+
+  /*
+   * 待刷新池：密钥刷新与用量刷新各一条。
+   *
+   * 扫描只负责入池（判断谁该刷），刷新是另一条定时任务从队首取几个去执行。
+   * 闲置账号与常规账号共用一个用量池——它们的差别只在扫描间隔（12 小时 vs 5 分钟），
+   * 入池频率天然不同，FIFO 就够了，不需要再分一条池子。
+   *
+   * 不做持久化：重启后池子清空，下一次扫描会重新把该刷的号收进来，行为自愈。
+   */
+  const keyRefreshPool = createRefreshPool()
+  const usageRefreshPool = createRefreshPool()
 
   // ============ 持久化 ============
 
@@ -742,14 +844,22 @@ export const useAccountsStore = defineStore('accounts', () => {
     const target = new Set(ids.filter(Boolean))
     if (!target.size) return 0
     let changed = 0
+    const cleared = new Set<string>()
     const next = accounts.value.map((account) => {
       if (!target.has(account.id) || !account.paymentLink) return account
       changed++
+      cleared.add(account.id)
       const { paymentLink: _link, paymentLinkAt: _at, ...rest } = account
       return rest as Account
     })
     if (changed) {
       accounts.value = next
+      /*
+       * 与标记已出售同理：阶段由 paymentLink 推导，清掉后这批账号会离开「待支付」。
+       * 正停在该 tab 上时它们会从列表里消失，留着勾选会让批量操作指向看不见的账号；
+       * 只清真正改过的那批，没链接的账号本来就不换阶段。
+       */
+      selectedIds.value = selectedIds.value.filter((id) => !cleared.has(id))
       persist()
     }
     return changed
@@ -1096,6 +1206,8 @@ export const useAccountsStore = defineStore('accounts', () => {
       status: 'active',
       lastError: undefined
     })
+    // 刚刷过就别让它继续排在池子里等第二次
+    removeFromRefreshPool(keyRefreshPool, id)
     return { ok: true, syncedToIde: res.data.syncedToIde }
   }
 
@@ -1118,7 +1230,7 @@ export const useAccountsStore = defineStore('accounts', () => {
       },
       /*
        * 主进程续期后没能写进 IDE，说明它已不是 IDE 激活账号，续期也随之停止调度。
-       * 这里同步清掉 isActive，让 refreshExpiringKeys 重新接管它；
+       * 这里同步清掉 isActive，让密钥扫描重新接管它；
        * 否则它会被主动续期和自动刷新同时排除，一直到 token 过期才被动刷新，
        * 那时 refreshToken 很可能已被 IDE 换废。
        */
@@ -1149,6 +1261,8 @@ export const useAccountsStore = defineStore('accounts', () => {
       return { ok: false, error: raw }
     }
     applySnapshot(id, res.data)
+    // 刚刷过就别让它继续排在池子里等第二次
+    removeFromRefreshPool(usageRefreshPool, id)
     return { ok: true }
   }
 
@@ -1334,14 +1448,26 @@ export const useAccountsStore = defineStore('accounts', () => {
    * 闲置号的积分不会再涨，没必要跟着常规间隔一起发请求；账号一多（几百上千个闲置号）
    * 这轮请求纯属浪费。分开计时后它按 idleUsageRefreshInterval（默认 12 小时）跑，
    * 与常规用量刷新互不影响。
+   *
+   * 注意这里只是「扫描间隔」：扫描只把它们放进用量池，实际刷新由 nextPoolFlushAt 控制。
    */
   const nextIdleUsageRefreshAt = ref<number | null>(null)
+  /**
+   * 池子刷新任务的下一次执行时间。
+   *
+   * 和上面三个扫描时间相互独立：扫描决定「谁该刷」，这个决定「什么时候真去刷」。
+   * 拆开之后，扫描间隔调得再密也不会增加上游请求量。
+   */
+  const nextPoolFlushAt = ref<number | null>(null)
+  /** 上一次池子刷新轮到的是哪个池，用来实现两池交替 */
+  let lastFlushedPool: 'key' | 'usage' | null = null
 
   // 已生效的间隔（分钟）。设置对象是整体替换的，换主题、折叠侧边栏这类无关改动
   // 也会触发外部的 watch，靠这两个值判断间隔是否真的变了，避免倒计时被无故清零
   let appliedKeyInterval = 0
   let appliedUsageInterval = 0
   let appliedIdleInterval = 0
+  let appliedPoolFlushInterval = 0
 
   /**
    * 上次真正跑完一轮的时间，落 localStorage 跨启动保留。
@@ -1350,7 +1476,8 @@ export const useAccountsStore = defineStore('accounts', () => {
   const LAST_RUN_STORAGE = {
     key: 'kal:auto-key-refresh-at',
     usage: 'kal:auto-usage-refresh-at',
-    idleUsage: 'kal:auto-idle-usage-refresh-at'
+    idleUsage: 'kal:auto-idle-usage-refresh-at',
+    poolFlush: 'kal:auto-pool-flush-at'
   } as const
 
   type AutoKind = keyof typeof LAST_RUN_STORAGE
@@ -1377,7 +1504,26 @@ export const useAccountsStore = defineStore('accounts', () => {
     Math.max(1, settingsStore.settings.idleUsageRefreshInterval) * 3_600_000
 
   /**
-   * 只处理即将过期的账号（剩余有效期 < keyRefreshWindowMinutes）。
+   * 每轮刷新最多处理多少个账号；0 表示不限制。
+   *
+   * 同一出口 IP 短时间集中请求会被上游限流回 403，一轮的请求量摊开能明显降低触发概率。
+   * 非法值（负数、NaN、空串）一律按「不限制」处理，保持与旧版本一致的兜底行为。
+   */
+  /** 每次从池子里取多少个去刷新；非法值回落到默认 */
+  const poolFlushSize = (): number => {
+    const raw = Number(settingsStore.settings.poolFlushSize)
+    return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_SETTINGS.poolFlushSize
+  }
+
+  /** 池子刷新间隔，换算成毫秒 */
+  const poolFlushIntervalMs = (): number =>
+    Math.max(1, Number(settingsStore.settings.poolFlushInterval) || 5) * 60_000
+
+  /**
+   * 扫描「即将过期的密钥」，把它们放进待刷新池。
+   *
+   * 只入池、不发请求：真正发请求由池子刷新任务按 poolFlushInterval / poolFlushSize
+   * 控制。两条时间线解耦后，扫描频率调高也不会带来更多上游请求。
    *
    * refreshToken 是轮换式的，刷一次旧值立即作废，所以刷得越勤、轮换失败与限流的
    * 面就越大，而 token 本身有 1 小时寿命，没必要每轮都换。
@@ -1387,7 +1533,7 @@ export const useAccountsStore = defineStore('accounts', () => {
    * （剩 15 分钟时刷 + 写盘 + 失败即停止调度交给 IDE 兜底），两边同时刷同一个账号
    * 反而会互相拿到已作废的旧 token。主动续期关闭时，这里照常覆盖它。
    */
-  async function refreshExpiringKeys(): Promise<void> {
+  function scanExpiringKeys(): void {
     const renewalOn = settingsStore.settings.proactiveRenewalEnabled
     const windowMinutes = Math.max(
       1,
@@ -1407,7 +1553,6 @@ export const useAccountsStore = defineStore('accounts', () => {
       (a) =>
         a.status !== 'banned' &&
         !(renewalOn && a.isActive) &&
-        // 提前量越大，每轮进队列的账号越多；批量刷新时这直接决定瞬时并发压力
         a.credentials.expiresAt - Date.now() < windowMs
     )
     const soon = expiring
@@ -1415,19 +1560,30 @@ export const useAccountsStore = defineStore('accounts', () => {
       .map((a) => a.id)
     const capped = expiring.length - soon.length
 
-    if (!soon.length) {
+    /*
+     * 入池标记是「入池那一刻的 token 到期时间」；出队时比对账号当前的到期时间，
+     * 变了说明中途被刷过，token 已经新鲜，直接丢弃不再刷一次。
+     */
+    const added = enqueueRefreshPool(keyRefreshPool, soon, (id) => {
+      const account = get(id)
+      if (!account || !isRefreshableId(id) || (renewalOn && account.isActive)) return null
+      return account.credentials.expiresAt
+    })
+
+    const pending = keyRefreshPool.queue.length
+    if (!added && !pending) {
+      // 池子也空：要么本就没有即将过期的账号，要么候选全被阈值/续期排除
       console.info(
         capped
-          ? `[AutoRefresh] 本轮没有需要刷新的密钥：${capped} 个账号用量已达 ${maxPercent}%，已按设置跳过`
-          : '[AutoRefresh] 本轮没有即将过期的账号，跳过密钥刷新'
+          ? `[AutoRefresh] 本轮没有需要加入密钥池的账号：${capped} 个用量已达 ${maxPercent}% 或正在主动续期，已跳过`
+          : '[AutoRefresh] 本轮没有即将过期的账号，密钥池为空'
       )
       return
     }
-    if (capped) {
-      console.info(`[AutoRefresh] 其中 ${capped} 个账号用量已达 ${maxPercent}%，本轮跳过密钥刷新`)
-    }
-    const res = await runBatch(soon, 'refresh')
-    if (res.success) message.success(`自动刷新密钥完成：成功 ${res.success}，失败 ${res.failed}`)
+    console.info(
+      `[AutoRefresh] 密钥池扫描完成：新入池 ${added} 个，池内待刷 ${pending} 个` +
+        (capped ? `（${capped} 个已达用量阈值或正在主动续期，未入池）` : '')
+    )
   }
 
   /**
@@ -1437,10 +1593,13 @@ export const useAccountsStore = defineStore('accounts', () => {
    * 把必然 401 / 403 的账号一直带着刷，只会白耗时间并在日志里堆无效告警。
    * 临时故障（网络、限流、5xx）不在跳过范围内，下一轮照常重试。
    *
-   * @param scope 'regular' 只刷非闲置账号，'idle' 只刷已闲置账号。
-   *   两条轨道各有各的间隔（见 idleUsageIntervalMs），互不重叠，避免同一账号被刷两遍。
+   * 只入池、不发请求：真正刷新由池子刷新任务按固定节奏执行。
+   *
+   * @param scope 'regular' 扫非闲置账号，'idle' 扫已闲置账号。
+   *   两条轨道各有各的扫描间隔（见 idleUsageIntervalMs）；入池后共用同一个池，
+   *   因为它们的入池频率天然不同，FIFO 就够了。
    */
-  async function refreshAllUsage(scope: 'regular' | 'idle'): Promise<void> {
+  function scanUsage(scope: 'regular' | 'idle'): void {
     // 回收站里的账号是冷藏的，不参与自动刷新用量
     const live = liveAccounts.value
     const byStage = live.filter((a) =>
@@ -1457,32 +1616,93 @@ export const useAccountsStore = defineStore('accounts', () => {
     const ids = notCapped.map((a) => a.id)
     const skipped = byStage.length - ids.length
     const label = scope === 'idle' ? '已闲置账号' : '常规账号'
-    // 全部被跳过时也要留下日志：账号多的时候「这轮为什么没刷」得能查得到
+    // 全部被跳过时也要留下日志：账号多的时候「这轮为什么没扫到」得能查得到
     if (!ids.length) {
       console.info(
-        `[AutoRefresh] ${label}本轮无可刷新账号：共 ${byStage.length} 个，` +
+        `[AutoRefresh] ${label}本轮无可入池账号：共 ${byStage.length} 个，` +
           `其中 ${capped} 个用量已达 ${maxPercent}%，其余为封禁或凭证失效`
       )
       return
     }
-    const startedAt = Date.now()
+    /*
+     * 入池标记是「用量数据的时间戳」；出队时比对，变了说明中途被刷成功过，
+     * 用量已经是最新的，直接丢弃不再重复请求一次。
+     *
+     * 用 usage.lastUpdated 而不是 lastCheckedAt：后者在刷新失败时也会更新，
+     * 拿它当标记会让「手动刷失败」的账号被误判成已刷过而不再重试。lastUpdated
+     * 只在解析成功响应时写入，失败时保持原值，语义正好。
+     */
+    const added = enqueueRefreshPool(usageRefreshPool, ids, (id) => {
+      const account = get(id)
+      if (!account || !isRefreshableId(id)) return null
+      return account.usage.lastUpdated ?? 0
+    })
+    const pending = usageRefreshPool.queue.length
     console.info(
-      `[AutoRefresh] 开始刷新${label}用量：${ids.length} 个账号` +
-        (skipped ? `（跳过 ${skipped} 个封禁、凭证失效或用量已达阈值账号）` : '')
+      `[AutoRefresh] ${label}用量池扫描完成：新入池 ${added} 个，池内待刷 ${pending} 个` +
+        (skipped ? `（${skipped} 个封禁、凭证失效或已达阈值，未入池）` : '')
     )
-    if (capped) {
-      console.info(`[AutoRefresh] 其中 ${capped} 个账号用量已达 ${maxPercent}%，本轮跳过`)
-    }
-    const res = await runBatch(ids, 'check')
-    // 打印耗时便于对照间隔：耗时接近或超过间隔时下一轮会紧接着开始
-    console.info(
-      `[AutoRefresh] ${label}用量刷新结束：成功 ${res.success}，失败 ${res.failed}，` +
-        `耗时 ${Math.round((Date.now() - startedAt) / 1000)}s`
-    )
-    if (res.failed) console.warn(`[AutoRefresh] ${label}用量刷新失败明细：`, res.messages)
   }
 
-  /** 每秒检查三条轨道是否到期；到期就跑，跑完从当前时间重新计时 */
+  /**
+   * 池子刷新任务：从密钥池与用量池里交替取一批去刷新，每次只刷一个池。
+   *
+   * 交替而不是每次都刷两个池，是为了让每 n 分钟的上游请求量稳定在 x 左右；
+   * 两个池都刷就是 2x，等于把限流窗口压缩一半。某个池为空时就直接轮到另一个，
+   * 不会白占一次机会。
+   *
+   * 空池不弹提示：这是每分钟都可能跑的自动任务，弹了就是刷屏。
+   */
+  async function flushPoolTick(): Promise<void> {
+    const order: ('key' | 'usage')[] =
+      lastFlushedPool === 'key' ? ['usage', 'key'] : ['key', 'usage']
+    for (const kind of order) {
+      const pool = kind === 'key' ? keyRefreshPool : usageRefreshPool
+      if (!pool.queue.length) continue
+      const ids = drainRefreshPool(pool, poolFlushSize(), (id, stamp) =>
+        kind === 'key'
+          ? stillNeededKey(id, stamp)
+          : stillNeededUsage(id, stamp)
+      )
+      /*
+       * 池里有条目但全被剔除（账号已删、已手动刷过）时也要记账：
+       * 不记的话下一次还会先试这个已经空了的池，把交替节奏打乱。
+       */
+      lastFlushedPool = kind
+      if (!ids.length) continue
+      const startedAt = Date.now()
+      console.info(
+        `[AutoRefresh] 刷新${kind === 'key' ? '密钥' : '用量'}池：取 ${ids.length} 个，` +
+          `池内还剩 ${pool.queue.length} 个`
+      )
+      const res = await runBatch(ids, kind === 'key' ? 'refresh' : 'check')
+      console.info(
+        `[AutoRefresh] ${kind === 'key' ? '密钥' : '用量'}池刷新结束：` +
+          `成功 ${res.success}，失败 ${res.failed}，耗时 ${Math.round((Date.now() - startedAt) / 1000)}s`
+      )
+      if (res.failed) console.warn(`[AutoRefresh] 池刷新失败明细：`, res.messages)
+      return
+    }
+    // 两个池都空（或取出来全是死号）：什么都不做，等扫描把新号放进来
+  }
+
+  /** 密钥池出队判断：账号还能刷、且入池后 token 没被换过 */
+  function stillNeededKey(id: string, stamp: number): boolean {
+    const account = get(id)
+    if (!account || !isRefreshableId(id)) return false
+    if (settingsStore.settings.proactiveRenewalEnabled && account.isActive) return false
+    // 到期时间变了 = 入池后被刷过，token 已经新鲜，不再重复刷
+    return account.credentials.expiresAt === stamp
+  }
+
+  /** 用量池出队判断：账号还能刷、且入池后用量没被刷过 */
+  function stillNeededUsage(id: string, stamp: number): boolean {
+    const account = get(id)
+    if (!account || !isRefreshableId(id)) return false
+    return (account.usage.lastUpdated ?? 0) === stamp
+  }
+
+  /** 每秒检查各条轨道是否到期；到期就跑，跑完从当前时间重新计时 */
   async function autoTick(): Promise<void> {
     if (autoRunning) return
     const at = Date.now()
@@ -1490,43 +1710,53 @@ export const useAccountsStore = defineStore('accounts', () => {
     const usageDue = nextUsageRefreshAt.value !== null && at >= nextUsageRefreshAt.value
     const idleDue =
       nextIdleUsageRefreshAt.value !== null && at >= nextIdleUsageRefreshAt.value
-    if (!keyDue && !usageDue && !idleDue) return
+    const flushDue = nextPoolFlushAt.value !== null && at >= nextPoolFlushAt.value
+    if (!keyDue && !usageDue && !idleDue && !flushDue) return
     // 手动批量操作正占用着全局任务状态：本轮不丢，等它结束后的下一个 tick 立刻补跑
     if (task.value.running) return
 
     autoRunning = true
     try {
-      // 到期时间先往后推一轮再执行：中途异常也不会卡在「一直到期」的状态里反复重试。
-      // 执行结束后只在「已经超过下一轮时间」时才顺延，否则每轮都会被本轮耗时顶后一截，
-      // 账号多的时候实际间隔会越跑越长
+      /*
+       * 到期时间先往后推一轮再执行：中途抛异常也不会卡在「一直到期」的状态里每秒重试。
+       *
+       * 扫描与刷新是两条独立时间线：扫描只入池，刷新才发请求。
+       * 扫描在入池前不需要知道池子有多长，所以直接按固定间隔排下一轮即可。
+       */
       if (keyDue) {
-        const next = at + keyIntervalMs()
-        nextKeyRefreshAt.value = next
-        await refreshExpiringKeys()
+        nextKeyRefreshAt.value = at + keyIntervalMs()
+        scanExpiringKeys()
         markRan('key')
-        if (Date.now() >= next) nextKeyRefreshAt.value = Date.now() + keyIntervalMs()
       }
       if (usageDue) {
-        const next = at + usageIntervalMs()
-        nextUsageRefreshAt.value = next
-        await refreshAllUsage('regular')
+        nextUsageRefreshAt.value = at + usageIntervalMs()
+        scanUsage('regular')
         markRan('usage')
-        if (Date.now() >= next) nextUsageRefreshAt.value = Date.now() + usageIntervalMs()
       }
       if (idleDue) {
-        const next = at + idleUsageIntervalMs()
-        nextIdleUsageRefreshAt.value = next
-        await refreshAllUsage('idle')
+        nextIdleUsageRefreshAt.value = at + idleUsageIntervalMs()
+        scanUsage('idle')
         markRan('idleUsage')
-        if (Date.now() >= next) {
-          nextIdleUsageRefreshAt.value = Date.now() + idleUsageIntervalMs()
-        }
+      }
+      if (flushDue) {
+        nextPoolFlushAt.value = at + poolFlushIntervalMs()
+        await flushPoolTick()
+        markRan('poolFlush')
       }
     } catch (e) {
       console.error('[AutoRefresh] 本轮自动刷新异常：', e)
     } finally {
       autoRunning = false
     }
+  }
+
+  /**
+   * 该账号是否还能参与刷新：已删除、进了回收站、被封禁的都不该占池子名额。
+   * 不排除 expired——密钥刷新本身就是为了把过期凭证换新，排除它等于永不修复。
+   */
+  function isRefreshableId(id: string): boolean {
+    const account = get(id)
+    return !!account && !isTrashed(account) && account.status !== 'banned'
   }
 
   function ensureTick(): void {
@@ -1540,8 +1770,10 @@ export const useAccountsStore = defineStore('accounts', () => {
   }
 
   /**
-   * 密钥刷新整轮从现在开始重新计时。
-   * 手动全量刷新完也调它，避免刚刷完又马上被自动任务刷一次。
+   * 手动批量刷新完调用：让扫描轨道从现在重新计时，避免刚看完就又被扫一遍。
+   *
+   * 手动刷新不进池、也不影响池子刷新的节奏——池子里原有的内容照常按自己的
+   * 时间点继续推进。
    */
   function scheduleKeyRefresh(): void {
     appliedKeyInterval = settingsStore.settings.keyRefreshInterval
@@ -1549,13 +1781,12 @@ export const useAccountsStore = defineStore('accounts', () => {
       nextKeyRefreshAt.value = null
       return
     }
-    // 调用方刚刚全量刷过，等价于跑完一轮，记下来供下次启动判断
     markRan('key')
     nextKeyRefreshAt.value = Date.now() + keyIntervalMs()
     ensureTick()
   }
 
-  /** 用量刷新整轮重新计时，同上 */
+  /** 用量扫描轨道重新计时，同上 */
   function scheduleUsageRefresh(): void {
     appliedUsageInterval = settingsStore.settings.usageRefreshInterval
     appliedIdleInterval = settingsStore.settings.idleUsageRefreshInterval
@@ -1584,7 +1815,9 @@ export const useAccountsStore = defineStore('accounts', () => {
         ? keyIntervalMs()
         : kind === 'idleUsage'
           ? idleUsageIntervalMs()
-          : usageIntervalMs()
+          : kind === 'poolFlush'
+            ? poolFlushIntervalMs()
+            : usageIntervalMs()
     const due = readLastRun(kind) + interval
     // 已经欠一轮：统一归到当下，界面显示「本轮正在执行…」而不是一个久远的时间
     return due <= Date.now() ? Date.now() : due
@@ -1614,7 +1847,24 @@ export const useAccountsStore = defineStore('accounts', () => {
   }
 
   /**
-   * 按当前设置对齐两条任务：开关刚打开或间隔真的改了才重新计时，
+   * 池子刷新轨道的对齐。
+   *
+   * 两个扫描开关都关掉时也停掉它——没有扫描就没人往池子里放号，
+   * 继续跑只是空转。任一扫描开着就照常跑（另一个池可能还有积压）。
+   */
+  function alignPoolFlush(): void {
+    appliedPoolFlushInterval = settingsStore.settings.poolFlushInterval
+    const anyAuto = settingsStore.settings.autoRefresh || settingsStore.settings.autoRefreshUsage
+    if (!anyAuto) {
+      nextPoolFlushAt.value = null
+      return
+    }
+    nextPoolFlushAt.value = alignNextRun('poolFlush')
+    ensureTick()
+  }
+
+  /**
+   * 按当前设置对齐各条轨道：开关刚打开或间隔真的改了才重新计时，
    * 其余设置改动（主题、侧边栏、隐私模式……）不影响已经在跑的倒计时。
    *
    * 计时基准是「上次跑完的时间」，所以冷启动时若距上次刷新已超过间隔，
@@ -1626,7 +1876,8 @@ export const useAccountsStore = defineStore('accounts', () => {
       autoRefreshUsage,
       keyRefreshInterval,
       usageRefreshInterval,
-      idleUsageRefreshInterval
+      idleUsageRefreshInterval,
+      poolFlushInterval
     } = settingsStore.settings
     // 用 align 而不是 schedule：冷启动或改短间隔后若已欠一轮，会立刻补跑
     if (!autoRefresh) nextKeyRefreshAt.value = null
@@ -1643,11 +1894,18 @@ export const useAccountsStore = defineStore('accounts', () => {
     ) {
       alignUsageRefresh()
     }
+    // 池子刷新轨道独立于上面两条：任一扫描开着就需要它把池子里的号刷出去
+    const anyScan = autoRefresh || autoRefreshUsage
+    if (!anyScan) nextPoolFlushAt.value = null
+    else if (nextPoolFlushAt.value === null || appliedPoolFlushInterval !== poolFlushInterval) {
+      alignPoolFlush()
+    }
 
     if (
       nextKeyRefreshAt.value === null &&
       nextUsageRefreshAt.value === null &&
-      nextIdleUsageRefreshAt.value === null
+      nextIdleUsageRefreshAt.value === null &&
+      nextPoolFlushAt.value === null
     ) {
       stopTick()
     } else {
@@ -1660,6 +1918,7 @@ export const useAccountsStore = defineStore('accounts', () => {
     nextKeyRefreshAt.value = null
     nextUsageRefreshAt.value = null
     nextIdleUsageRefreshAt.value = null
+    nextPoolFlushAt.value = null
   }
 
   return {
@@ -1716,6 +1975,7 @@ export const useAccountsStore = defineStore('accounts', () => {
     nextKeyRefreshAt,
     nextUsageRefreshAt,
     nextIdleUsageRefreshAt,
+    nextPoolFlushAt,
     scheduleKeyRefresh,
     scheduleUsageRefresh,
     startAutoRefresh,

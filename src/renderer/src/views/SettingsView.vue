@@ -144,6 +144,7 @@ const nextUsageRefreshText = computed(() => nextRefreshText(accountsStore.nextUs
 const nextIdleUsageRefreshText = computed(() =>
   nextRefreshText(accountsStore.nextIdleUsageRefreshAt)
 )
+const nextPoolFlushText = computed(() => nextRefreshText(accountsStore.nextPoolFlushAt))
 const nextApiKeyUsageRefreshText = computed(() => nextRefreshText(keysStore.nextUsageRefreshAt))
 
 watch(
@@ -273,6 +274,8 @@ type NumericSettingKey =
   | 'idleUsageRefreshInterval'
   | 'usageRefreshMaxPercent'
   | 'keyRefreshWindowMinutes'
+  | 'poolFlushInterval'
+  | 'poolFlushSize'
   | 'apiKeyUsageRefreshInterval'
   | 'apiKeyRefreshConcurrency'
 
@@ -652,6 +655,39 @@ function resetAll(): void {
             用上面的百分比一起拦截密钥刷新。停刷后 token 会过期，再次使用该账号需要重新登录
           </span>
         </a-form-item>
+        <a-form-item label="池子刷新间隔" class="field-inline">
+          <a-input-number
+            :value="settings.poolFlushInterval"
+            :min="1"
+            :max="120"
+            :step="1"
+            addon-after="分钟"
+            style="width: 180px"
+            :disabled="!settings.autoRefresh && !settings.autoRefreshUsage"
+            @change="(v: unknown) => updateNumber('poolFlushInterval', v)"
+          />
+          <span class="muted">
+            每隔这么久从待刷新池里取一批真正去刷；上面的扫描间隔只负责把账号放进池子。
+            密钥池与用量池交替执行，单个池的实际周期约为这个值的两倍
+            <span class="next-refresh">{{ nextPoolFlushText }}</span>
+          </span>
+        </a-form-item>
+        <a-form-item label="每次刷新数量" class="field-inline">
+          <a-input-number
+            :value="settings.poolFlushSize"
+            :min="1"
+            :max="200"
+            :step="5"
+            addon-after="个"
+            style="width: 180px"
+            :disabled="!settings.autoRefresh && !settings.autoRefreshUsage"
+            @change="(v: unknown) => updateNumber('poolFlushSize', v)"
+          />
+          <span class="muted">
+            每次从池子里取多少个账号去刷新。同一出口 IP 短时间内集中请求太多会被上游限流
+            （返回 403），调小可显著降低触发概率，代价是池子排得更久
+          </span>
+        </a-form-item>
         <a-form-item label="批量并发" class="field-inline">
           <a-input-number
             :value="settings.concurrency"
@@ -670,9 +706,23 @@ function resetAll(): void {
         </a-form-item>
       </a-form>
       <ul class="tips">
-        <li>自动刷新密钥只处理 30 分钟内即将过期的账号；自动刷新用量会覆盖全部非封禁账号。</li>
-        <li>两个间隔各自独立计时，撞在一起时按「密钥 → 用量」先后串行执行，不会丢轮。</li>
-        <li>账号很多时建议把用量刷新间隔调大一些，全量拉取用量的请求量随账号数线性增长。</li>
+        <li>
+          扫描与刷新是两条独立的时间线：上面的密钥 / 用量间隔只决定「多久检查一次谁该刷」，
+          符合条件（密钥即将过期、用量该更新）的账号会被放进待刷新池，本身不发请求。
+        </li>
+        <li>
+          「池子刷新间隔」<b>每隔这么久从池子里取一批真正去刷</b>，密钥池与用量池交替执行，
+          所以单个池的实际周期约为该值的两倍。把请求按固定节奏摊开，是规避上游限流的主要手段。
+        </li>
+        <li>
+          「每次刷新数量」决定每一轮取几个。调大会更快清空池子，但同一出口 IP 的瞬时请求量也更大；
+          账号越多越应该调小。
+        </li>
+        <li>
+          手动刷新单个账号时，如果它在池子里会被一并移除，不会被池子再刷一遍；
+          手动批量刷新需要先勾选账号，勾多少刷多少，不受「每次刷新数量」限制，也不入池。
+        </li>
+        <li>三条扫描轨道（密钥 / 常规用量 / 闲置用量）各自独立计时，撞在一起时按顺序串行执行，不会丢轮。</li>
         <li>手动批量操作进行中时定时任务会等待，操作结束后立即补跑到期的那一轮。</li>
         <li>窗口最小化到托盘、电脑睡眠唤醒后错过的轮次都会自动补跑，不需要重开窗口。</li>
         <li>

@@ -21,6 +21,27 @@ export function isCredentialRejected(message: string): boolean {
 }
 
 /**
+ * 判断错误是否为「被上游限流」。
+ *
+ * 429 与 Too many requests 是最明确的信号；Kiro 的极端限流还会直接回 403，
+ * 只能从响应体里的措辞认出来。这些文案取自 AWS 的 ThrottlingException 与
+ * kiro-agent 转发出来的原文，判定时统一小写。
+ */
+export function isRateLimited(message: string): boolean {
+  const m = String(message || '').toLowerCase()
+  if (!m) return false
+  if (m.includes('429') || m.includes('too many requests')) return true
+  if (m.includes('throttl')) return true
+  if (m.includes('rate limit') || m.includes('ratelimit')) return true
+  if (m.includes('slow down') || m.includes('slowdown')) return true
+  /*
+   * 不含 "limit exceeded" / "quota exceeded"：那是额度耗尽（OVERAGE_REQUEST_LIMIT_EXCEEDED
+   * 之类），等一会儿不会好，混进限流会让这些号在待刷新池里永远空转。
+   */
+  return false
+}
+
+/**
  * 判断错误是否为「重试也不会变好」的确定性失败，用于批量刷新时跳过。
  *
  * 只认凭证被拒、权限被拒和账号被封这三类：它们要靠重新登录或换账号才能解决，
@@ -33,11 +54,18 @@ export function isCredentialRejected(message: string): boolean {
 export function isPermanentFailure(message: string): boolean {
   const m = String(message || '').toLowerCase()
   if (!m) return false
-  // 限流与服务端故障优先判定为临时，避免被下面的关键词误伤
-  if (m.includes('429') || m.includes('too many requests')) return false
+  /*
+   * 限流优先判定为临时，且必须排在 isCredentialRejected 之前。
+   * 同一出口 IP 短时间集中刷新大量账号时，Kiro 会回 403 并带上限流语义
+   * （ThrottlingException / rate limit / slow down 等）；这类文案里往往也含
+   * "token"，先跑 isCredentialRejected 会把它们判成凭证失效，账号于是被永久跳过
+   * 自动刷新——恰恰是限流最严重的时候，整批一起停刷，再也看不到额度恢复。
+   */
+  if (isRateLimited(m)) return false
+  // 服务端故障同样是临时的
   if (/\b5\d\d\b/.test(m) || m.includes('timeout') || m.includes('fetch failed')) return false
   if (isCredentialRejected(m)) return true
   if (m.includes('accountsuspended') || m.includes('suspended') || m.includes('banned')) return true
-  // 403 一律视为权限被拒（bearer token invalid / forbidden），重试无意义
+  // 到这里 403 只剩真正的权限问题（bearer token invalid / forbidden），重试无意义
   return m.includes('403') || m.includes('forbidden')
 }

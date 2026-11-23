@@ -5,6 +5,7 @@ import { message } from 'ant-design-vue'
 import {
   CrownOutlined,
   DeleteOutlined,
+  DisconnectOutlined,
   DownOutlined,
   DownloadOutlined,
   EditOutlined,
@@ -54,7 +55,6 @@ import {
   copyText,
   notifyResult
 } from '@/utils/ui'
-import { shouldSkipAccountUsageRefresh } from '@shared/refreshPolicy'
 import { ACCOUNT_STAGE_META, ACCOUNT_STAGES, type AccountStage } from '@shared/accountStage'
 import { isTrashed } from '@shared/itemGroups'
 import type { Account, AccountDisplayMode, SwitchAccountResult } from '@shared/types'
@@ -135,11 +135,13 @@ const refreshButtonText = computed(() => {
   if (keyRefreshing.value) return '正在刷新密钥...'
   if (usageRefreshing.value) {
     const count = accountsStore.selectedIds.length
-    const scope = count ? `${count}个账户` : ''
-    return `正在刷新${scope}用量...`
+    return count ? `正在刷新${count}个账户用量...` : '正在刷新用量...'
   }
   return '刷新'
 })
+
+/** 批量刷新只作用于勾选的账号，没勾选就点不动 */
+const hasSelection = computed(() => accountsStore.selectedIds.length > 0)
 
 const stats = computed(() => accountsStore.stats)
 
@@ -651,29 +653,33 @@ function markSold(ids: string[], sold: boolean): void {
   message.success(sold ? `已将 ${changed} 个账号标记为已出售` : `已取消 ${changed} 个账号的出售标记`)
 }
 
+/**
+ * 清掉所选账号的支付链接。
+ * 只处理真正有链接的那些，一个都没有时明确提示，避免用户以为按钮没生效。
+ */
+function clearPaymentLinks(ids: string[]): void {
+  const changed = accountsStore.clearPaymentLink(ids)
+  if (!changed) return void message.info('所选账号都没有支付链接')
+  message.success(`已清除 ${changed} 个账号的支付链接`)
+}
+
+/**
+ * 批量刷新密钥 / 用量。
+ *
+ * 只处理勾选的账号（含被当前筛选挡住、看不见的那些，顺序按界面当前排序）。
+ * 未勾选时不做「刷全部」——自动刷新已经按扫描间隔把该刷的账号放进待刷新池，
+ * 再给一个「一次刷完所有账号」的入口只会绕过限流保护。
+ */
 async function batch(kind: 'refresh' | 'check'): Promise<void> {
+  if (!accountsStore.selectedIds.length) return void message.info('请先勾选要刷新的账号')
+
   /*
-   * 有勾选时刷全部勾选项，包括被当前筛选挡住、看不见的那些——
-   * 与「批量操作（N个）」的口径一致。顺序按界面当前排序，看不见的排在后面。
-   * 没有勾选时刷当前列表里的全部。
+   * 勾选场景不做确定性失败的跳过：用户已经明确指定了目标，替他做决定反而困惑；
+   * 卡片上的单个刷新按钮同样不受影响，异常账号始终留有手动重试的入口。
+   * 勾选刷新直接执行、不入池——用户要的是现在就看结果。
    */
-  const selected = new Set(accountsStore.selectedIds)
-  const scope = selected.size ? batchTargets.value : sorted.value
-
-  // 没有勾选时才算「刷了全部」，这种情况刷完把自动刷新整轮往后顺延
-  const isFullRun = selected.size === 0
-
-  // 全量刷新时跳过确定性失败的账号（封禁、凭证失效），省下必然白跑的请求。
-  // 勾选场景不跳过：用户已经明确指定了目标，替他做决定反而困惑；
-  // 卡片上的单个刷新按钮同样不受影响，异常账号始终留有手动重试的入口。
-  const runnable = isFullRun ? scope.filter((a) => !shouldSkipAccountUsageRefresh(a)) : scope
-  const skipped = scope.length - runnable.length
-  const ids = runnable.map((a) => a.id)
-  if (ids.length === 0) {
-    return void message.info(
-      skipped ? `${skipped} 个账号处于封禁或凭证失效状态，已全部跳过` : '没有可操作的账号'
-    )
-  }
+  const ids = batchTargets.value.map((a) => a.id)
+  if (ids.length === 0) return void message.info('没有可操作的账号')
 
   const label = kind === 'refresh' ? '密钥刷新' : '用量刷新'
   const key = `batch-${kind}`
@@ -687,20 +693,21 @@ async function batch(kind: 'refresh' | 'check'): Promise<void> {
     batchProgress.value = `${label} ${done}/${total}`
   })
 
-  // 刚全量刷完，下一轮自动刷新从现在起重新计时，避免紧接着又刷一遍
-  if (isFullRun) {
-    if (kind === 'refresh') accountsStore.scheduleKeyRefresh()
-    else accountsStore.scheduleUsageRefresh()
-  }
+  /*
+   * 刚手动刷过的账号理应是最新的，把扫描轨道往后顺延一轮：
+   * 否则下一次扫描会立刻把它们重新收进池子，过一会儿又被刷一遍。
+   * 勾选刷新的都是「用户认为该刷」的号，顺延不会漏掉别的东西。
+   */
+  if (kind === 'refresh') accountsStore.scheduleKeyRefresh()
+  else accountsStore.scheduleUsageRefresh()
 
   // 收尾时销毁进度提示再弹结果，避免复用同 key 带来的更新不确定性
   message.destroy(key)
-  const skippedText = skipped ? `，跳过 ${skipped}` : ''
   if (res.failed) {
-    message.warning(`${label}完成：成功 ${res.success}，失败 ${res.failed}${skippedText}`)
+    message.warning(`${label}完成：成功 ${res.success}，失败 ${res.failed}`)
     console.warn(res.messages)
   } else {
-    message.success(`${label}完成：成功 ${res.success}${skippedText}`)
+    message.success(`${label}完成：成功 ${res.success}`)
   }
 }
 
@@ -828,12 +835,15 @@ function logoutIde(account: Account): void {
         <a-divider type="vertical" style="margin: 0 2px" />
 
         <!-- 两种刷新收进同一个菜单：它们互斥，全局任务状态一次只容得下一条 -->
-        <a-dropdown :disabled="busy">
-          <a-button :size="toolbarSize" :loading="refreshing">
-            <template #icon><SyncOutlined /></template>
-            {{ refreshButtonText }}
-            <DownOutlined v-if="!refreshing" />
-          </a-button>
+        <!-- 批量刷新只作用于勾选账号：没勾选时置灰，避免误以为是「刷全部」 -->
+        <a-dropdown :disabled="busy || !hasSelection">
+          <a-tooltip :title="hasSelection ? '' : '请先勾选要刷新的账号'">
+            <a-button :size="toolbarSize" :loading="refreshing" :disabled="!hasSelection && !busy">
+              <template #icon><SyncOutlined /></template>
+              {{ refreshButtonText }}
+              <DownOutlined v-if="!refreshing" />
+            </a-button>
+          </a-tooltip>
           <template #overlay>
             <a-menu>
               <a-menu-item key="refresh" @click="batch('refresh')">
@@ -906,6 +916,14 @@ function logoutIde(account: Account): void {
               <a-menu-item key="unsold" @click="markSold([...accountsStore.selectedIds], false)">
                 <TagOutlined />
                 批量取消已出售
+              </a-menu-item>
+              <!-- 清链接后账号会离开「待支付」阶段，勾选随之清掉（见 store 的 clearPaymentLink） -->
+              <a-menu-item
+                key="clear-payment-link"
+                @click="clearPaymentLinks([...accountsStore.selectedIds])"
+              >
+                <DisconnectOutlined />
+                移除支付链接
               </a-menu-item>
               <a-menu-item key="apikey" @click="batchApiKeyOpen = true">
                 <KeyOutlined />
