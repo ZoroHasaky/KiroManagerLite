@@ -88,9 +88,11 @@ watch(
     settingsStore.settings.usageRefreshInterval,
     // 闲置号单独一条轨道，改了间隔要立刻按新值重排
     settingsStore.settings.idleUsageRefreshInterval,
-    // 池子刷新是独立轨道：间隔改了要重排，数量改了下一轮自然生效
-    settingsStore.settings.poolFlushInterval,
-    settingsStore.settings.poolFlushSize
+    // 两个池各有独立的刷新节奏：间隔改了要重排，数量改了下一轮自然生效
+    settingsStore.settings.keyFlushInterval,
+    settingsStore.settings.keyFlushSize,
+    settingsStore.settings.usageFlushInterval,
+    settingsStore.settings.usageFlushSize
   ],
   () => accountsStore.startAutoRefresh()
 )

@@ -46,9 +46,6 @@ import { formatCheckedAt } from '@/utils/format'
 import { now } from '@/utils/now'
 import { bodyPopupContainer, confirmDanger } from '@/utils/ui'
 
-/** 与 accounts store 里的 PROXY_CONCURRENCY_CAP 保持一致，仅用于提示文案 */
-const PROXY_CONCURRENCY_CAP = 3
-
 const settingsStore = useSettingsStore()
 const accountsStore = useAccountsStore()
 const keysStore = useKeysStore()
@@ -121,8 +118,13 @@ async function discardPackUpdate(): Promise<void> {
 }
 
 
-/** 下次刷新的时间与倒计时，跟着共享时钟每 5 秒重算 */
-function nextRefreshText(at: number | null): string {
+/**
+ * 下次执行的时间与倒计时，跟着共享时钟每 5 秒重算。
+ *
+ * action 区分「检测」与「刷新」：前者只是判断谁该刷，后者才真正发请求。
+ * 两类轨道混用同一个词会让用户以为检测也在发请求。
+ */
+function nextRunText(at: number | null, action: '检测' | '刷新'): string {
   if (!at) return '未开启，不会自动执行'
   const remain = at - now.value
   // 到期后到期时间会被立刻往后推，这里还没推说明本轮正在执行或在等手动任务让路
@@ -136,16 +138,20 @@ function nextRefreshText(at: number | null): string {
     : minutes
       ? `${minutes} 分 ${seconds} 秒后`
       : `${seconds} 秒后`
-  return `下次刷新 ${formatCheckedAt(at, now.value)}（${countdown}）`
+  return `下次${action} ${formatCheckedAt(at, now.value)}（${countdown}）`
 }
 
-const nextKeyRefreshText = computed(() => nextRefreshText(accountsStore.nextKeyRefreshAt))
-const nextUsageRefreshText = computed(() => nextRefreshText(accountsStore.nextUsageRefreshAt))
+const nextKeyRefreshText = computed(() => nextRunText(accountsStore.nextKeyRefreshAt, '检测'))
+const nextUsageRefreshText = computed(() => nextRunText(accountsStore.nextUsageRefreshAt, '检测'))
 const nextIdleUsageRefreshText = computed(() =>
-  nextRefreshText(accountsStore.nextIdleUsageRefreshAt)
+  nextRunText(accountsStore.nextIdleUsageRefreshAt, '检测')
 )
-const nextPoolFlushText = computed(() => nextRefreshText(accountsStore.nextPoolFlushAt))
-const nextApiKeyUsageRefreshText = computed(() => nextRefreshText(keysStore.nextUsageRefreshAt))
+const nextKeyFlushText = computed(() => nextRunText(accountsStore.nextKeyFlushAt, '刷新'))
+const nextUsageFlushText = computed(() => nextRunText(accountsStore.nextUsageFlushAt, '刷新'))
+// API Key 那条仍是一体化的定时同步，没有「检测 / 刷新」之分，沿用「刷新」
+const nextApiKeyUsageRefreshText = computed(() =>
+  nextRunText(keysStore.nextUsageRefreshAt, '刷新')
+)
 
 watch(
   () => settingsStore.settings.proxyUrl,
@@ -274,8 +280,10 @@ type NumericSettingKey =
   | 'idleUsageRefreshInterval'
   | 'usageRefreshMaxPercent'
   | 'keyRefreshWindowMinutes'
-  | 'poolFlushInterval'
-  | 'poolFlushSize'
+  | 'keyFlushInterval'
+  | 'keyFlushSize'
+  | 'usageFlushInterval'
+  | 'usageFlushSize'
   | 'apiKeyUsageRefreshInterval'
   | 'apiKeyRefreshConcurrency'
 
@@ -551,24 +559,18 @@ function resetAll(): void {
       </a-form>
     </a-card>
 
-    <a-card size="small" title="账号刷新" style="margin-bottom: 16px">
+    <a-card size="small" title="密钥刷新" style="margin-bottom: 16px">
       <a-form v-bind="FORM_LAYOUT">
         <a-form-item label="自动刷新密钥" class="field-inline">
           <SettingSwitch field="autoRefresh" />
           <span class="muted">
-            只刷新 30 分钟内即将过期的账号，避免无谓轮换 Refresh Token
+            自动检测即将过期的账号并刷新 token，避免无谓轮换 Refresh Token
           </span>
         </a-form-item>
         <a-form-item label="IDE 主动续期" class="field-inline">
           <SettingSwitch field="proactiveRenewalEnabled" />
           <span class="muted">
             在 IDE 激活账号的 token 剩 ~15 分钟时抢先 refresh，让 Kiro IDE 永远不自己 refresh
-          </span>
-        </a-form-item>
-        <a-form-item label="自动刷新用量" class="field-inline">
-          <SettingSwitch field="autoRefreshUsage" />
-          <span class="muted">
-            按下面的用量刷新间隔与批量并发，定期拉取账号的积分用量与订阅信息
           </span>
         </a-form-item>
         <a-form-item label="密钥过期提前量" class="field-inline">
@@ -583,10 +585,10 @@ function resetAll(): void {
             @change="(v: unknown) => updateNumber('keyRefreshWindowMinutes', v)"
           />
           <span class="muted">
-            只刷新剩余有效期小于这个值的账号，提前量越小每轮要刷的账号越少
+            剩余有效期小于这个值的账号才算「即将过期」，提前量越小进池的账号越少
           </span>
         </a-form-item>
-        <a-form-item label="密钥刷新间隔" class="field-inline">
+        <a-form-item label="密钥检测间隔" class="field-inline">
           <a-input-number
             :value="settings.keyRefreshInterval"
             :min="1"
@@ -598,11 +600,76 @@ function resetAll(): void {
             @change="(v: unknown) => updateNumber('keyRefreshInterval', v)"
           />
           <span class="muted">
-            多久检查一次即将过期的密钥
+            多久检测一次哪些账号即将过期；检测只负责把它们放进密钥池，不发请求
             <span class="next-refresh">{{ nextKeyRefreshText }}</span>
           </span>
         </a-form-item>
-        <a-form-item label="用量刷新间隔" class="field-inline">
+        <a-form-item label="密钥池刷新间隔" class="field-inline">
+          <a-input-number
+            :value="settings.keyFlushInterval"
+            :min="1"
+            :max="120"
+            :step="1"
+            addon-after="分钟"
+            style="width: 180px"
+            :disabled="!settings.autoRefresh"
+            @change="(v: unknown) => updateNumber('keyFlushInterval', v)"
+          />
+          <span class="muted">
+            每隔这么久从密钥池里取一批真正去刷新
+            <span class="next-refresh">{{ nextKeyFlushText }}</span>
+          </span>
+        </a-form-item>
+        <a-form-item label="密钥池每次数量" class="field-inline">
+          <a-input-number
+            :value="settings.keyFlushSize"
+            :min="1"
+            :max="200"
+            :step="5"
+            addon-after="个"
+            style="width: 180px"
+            :disabled="!settings.autoRefresh"
+            @change="(v: unknown) => updateNumber('keyFlushSize', v)"
+          />
+          <span class="muted">
+            每次从密钥池取多少个账号。同一出口 IP 短时间内请求太多会被上游限流（返回 403），
+            调小可显著降低触发概率，代价是池子排得更久
+          </span>
+        </a-form-item>
+        <a-form-item label="用量达阈值后停刷密钥" class="field-inline">
+          <SettingSwitch field="skipKeyRefreshAtUsageLimit" />
+          <span class="muted">
+            用「用量刷新」里的百分比一起拦截密钥刷新。停刷后 token 会过期，
+            再次使用该账号需要重新登录
+          </span>
+        </a-form-item>
+      </a-form>
+      <ul class="tips">
+        <li>
+          检测与刷新是两条独立的时间线：「密钥检测间隔」只决定多久检查一次谁该刷，
+          即将过期的账号会被放进密钥池，本身不发请求。
+        </li>
+        <li>
+          「密钥池刷新间隔」与「密钥池每次数量」决定真正发出多少请求。
+          把请求按固定节奏摊开，是规避上游限流的主要手段。
+        </li>
+        <li>手动刷新单个账号时，如果它在池子里会被一并移除，不会被池子再刷一遍。</li>
+        <li>
+          主动续期只对 IDE 当前激活的那一个账号维护定时器，续期成功后写回磁盘并刷新界面；
+          该账号一旦不再是 IDE 当前账号就自动停止，交给 IDE 自身兜底。
+        </li>
+      </ul>
+    </a-card>
+
+    <a-card size="small" title="用量刷新" style="margin-bottom: 16px">
+      <a-form v-bind="FORM_LAYOUT">
+        <a-form-item label="自动刷新用量" class="field-inline">
+          <SettingSwitch field="autoRefreshUsage" />
+          <span class="muted">
+            自动检测并拉取账号的积分用量与订阅信息
+          </span>
+        </a-form-item>
+        <a-form-item label="用量检测间隔" class="field-inline">
           <a-input-number
             :value="settings.usageRefreshInterval"
             :min="1"
@@ -614,11 +681,11 @@ function resetAll(): void {
             @change="(v: unknown) => updateNumber('usageRefreshInterval', v)"
           />
           <span class="muted">
-            多久拉取一次积分用量与订阅信息
+            多久检测一次哪些账号该更新用量；检测只负责把它们放进用量池，不发请求
             <span class="next-refresh">{{ nextUsageRefreshText }}</span>
           </span>
         </a-form-item>
-        <a-form-item label="已闲置账号刷新间隔" class="field-inline">
+        <a-form-item label="已闲置账号检测间隔" class="field-inline">
           <a-input-number
             :value="settings.idleUsageRefreshInterval"
             :min="1"
@@ -630,8 +697,39 @@ function resetAll(): void {
             @change="(v: unknown) => updateNumber('idleUsageRefreshInterval', v)"
           />
           <span class="muted">
-            已闲置账号不会再产生新消耗，单独按这个间隔刷新即可
+            已闲置账号不会再产生新消耗，单独按这个间隔检测即可
             <span class="next-refresh">{{ nextIdleUsageRefreshText }}</span>
+          </span>
+        </a-form-item>
+        <a-form-item label="用量池刷新间隔" class="field-inline">
+          <a-input-number
+            :value="settings.usageFlushInterval"
+            :min="1"
+            :max="120"
+            :step="1"
+            addon-after="分钟"
+            style="width: 180px"
+            :disabled="!settings.autoRefreshUsage"
+            @change="(v: unknown) => updateNumber('usageFlushInterval', v)"
+          />
+          <span class="muted">
+            每隔这么久从用量池里取一批真正去拉取
+            <span class="next-refresh">{{ nextUsageFlushText }}</span>
+          </span>
+        </a-form-item>
+        <a-form-item label="用量池每次数量" class="field-inline">
+          <a-input-number
+            :value="settings.usageFlushSize"
+            :min="1"
+            :max="200"
+            :step="5"
+            addon-after="个"
+            style="width: 180px"
+            :disabled="!settings.autoRefreshUsage"
+            @change="(v: unknown) => updateNumber('usageFlushSize', v)"
+          />
+          <span class="muted">
+            每次从用量池取多少个账号。用量刷新只影响界面数字，可以比密钥池放得更慢
           </span>
         </a-form-item>
         <a-form-item label="用量达阈值后停刷" class="field-inline">
@@ -649,45 +747,6 @@ function resetAll(): void {
             用量达到该百分比后不再自动刷新，0 表示不限制；重置时间过后会自动放行一次
           </span>
         </a-form-item>
-        <a-form-item label="用量达阈值后停刷密钥" class="field-inline">
-          <SettingSwitch field="skipKeyRefreshAtUsageLimit" />
-          <span class="muted">
-            用上面的百分比一起拦截密钥刷新。停刷后 token 会过期，再次使用该账号需要重新登录
-          </span>
-        </a-form-item>
-        <a-form-item label="池子刷新间隔" class="field-inline">
-          <a-input-number
-            :value="settings.poolFlushInterval"
-            :min="1"
-            :max="120"
-            :step="1"
-            addon-after="分钟"
-            style="width: 180px"
-            :disabled="!settings.autoRefresh && !settings.autoRefreshUsage"
-            @change="(v: unknown) => updateNumber('poolFlushInterval', v)"
-          />
-          <span class="muted">
-            每隔这么久从待刷新池里取一批真正去刷；上面的扫描间隔只负责把账号放进池子。
-            密钥池与用量池交替执行，单个池的实际周期约为这个值的两倍
-            <span class="next-refresh">{{ nextPoolFlushText }}</span>
-          </span>
-        </a-form-item>
-        <a-form-item label="每次刷新数量" class="field-inline">
-          <a-input-number
-            :value="settings.poolFlushSize"
-            :min="1"
-            :max="200"
-            :step="5"
-            addon-after="个"
-            style="width: 180px"
-            :disabled="!settings.autoRefresh && !settings.autoRefreshUsage"
-            @change="(v: unknown) => updateNumber('poolFlushSize', v)"
-          />
-          <span class="muted">
-            每次从池子里取多少个账号去刷新。同一出口 IP 短时间内集中请求太多会被上游限流
-            （返回 403），调小可显著降低触发概率，代价是池子排得更久
-          </span>
-        </a-form-item>
         <a-form-item label="批量并发" class="field-inline">
           <a-input-number
             :value="settings.concurrency"
@@ -697,8 +756,8 @@ function resetAll(): void {
             @change="(v: unknown) => update({ concurrency: Number(v) || 5 })"
           />
           <span class="muted">
-            并发过高容易被限流；开启代理时实际并发不超过
-            {{ PROXY_CONCURRENCY_CAP }}（本地代理扛不住太多并发隧道）
+            一个批次内部同时发出几个请求。与「每次数量」相乘才是瞬时请求量，
+            并发过高容易被限流
           </span>
         </a-form-item>
         <a-form-item label="删除前确认">
@@ -707,28 +766,16 @@ function resetAll(): void {
       </a-form>
       <ul class="tips">
         <li>
-          扫描与刷新是两条独立的时间线：上面的密钥 / 用量间隔只决定「多久检查一次谁该刷」，
-          符合条件（密钥即将过期、用量该更新）的账号会被放进待刷新池，本身不发请求。
+          「用量检测间隔」只决定多久检查一次谁该刷；真正的请求由「用量池刷新间隔」
+          与「用量池每次数量」控制。
         </li>
         <li>
-          「池子刷新间隔」<b>每隔这么久从池子里取一批真正去刷</b>，密钥池与用量池交替执行，
-          所以单个池的实际周期约为该值的两倍。把请求按固定节奏摊开，是规避上游限流的主要手段。
+          已闲置账号（用过分或超过闲置阈值）按更长的间隔单独检测，与常规账号共用同一个用量池。
         </li>
-        <li>
-          「每次刷新数量」决定每一轮取几个。调大会更快清空池子，但同一出口 IP 的瞬时请求量也更大；
-          账号越多越应该调小。
-        </li>
-        <li>
-          手动刷新单个账号时，如果它在池子里会被一并移除，不会被池子再刷一遍；
-          手动批量刷新需要先勾选账号，勾多少刷多少，不受「每次刷新数量」限制，也不入池。
-        </li>
-        <li>三条扫描轨道（密钥 / 常规用量 / 闲置用量）各自独立计时，撞在一起时按顺序串行执行，不会丢轮。</li>
+        <li>手动批量刷新需要先勾选账号，勾多少刷多少，不受「每次数量」限制，也不入池。</li>
+        <li>各条检测与刷新轨道独立计时，撞在一起时按顺序串行执行，不会丢轮。</li>
         <li>手动批量操作进行中时定时任务会等待，操作结束后立即补跑到期的那一轮。</li>
         <li>窗口最小化到托盘、电脑睡眠唤醒后错过的轮次都会自动补跑，不需要重开窗口。</li>
-        <li>
-          主动续期只对 IDE 当前激活的那一个账号维护定时器，续期成功后写回磁盘并刷新界面；
-          该账号一旦不再是 IDE 当前账号就自动停止，交给 IDE 自身兜底。
-        </li>
       </ul>
     </a-card>
 

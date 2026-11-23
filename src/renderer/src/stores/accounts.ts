@@ -144,13 +144,6 @@ function throttledShallowRef<T>(initial: T, wait: number): Ref<T> {
 const EXPIRING_SOON_DAYS = 7
 /** 自动刷新密钥的默认时间窗（分钟）；实际取值来自设置，这里只是兜底 */
 const DEFAULT_KEY_REFRESH_WINDOW_MINUTES = 30
-/**
- * 走代理时批量刷新的并发上限。
- *
- * 本地代理对并发隧道数量的容忍度低，超过就容易整批被重置（表现为 fetch failed）。
- * 3 条已经足够跑满千兆带宽下的 JSON 小请求，再多收益很低、失败率却明显上升。
- */
-const PROXY_CONCURRENCY_CAP = 3
 /** 接口没给 expiresIn 时的兜底有效期（秒） */
 const DEFAULT_EXPIRES_IN = 3600
 
@@ -169,8 +162,8 @@ interface RefreshPoolEntry {
 /**
  * 待刷新池：先进先出。
  *
- * 扫描只负责入池，刷新另有一个定时任务从队首取几个去刷——两条时间线解耦，
- * 扫描频率再高也不会带来更多请求。
+ * 检测只负责入池，刷新另有一个定时任务从队首取几个去刷——两条时间线解耦，
+ * 检测频率再高也不会带来更多请求。
  *
  * 存 id 而不是账号对象：账号数据每次刷新都会整表替换，存快照会读到过期凭证。
  * `queued` 与 `queue` 同步维护，用来保证同一个账号不会重复入池——只靠数组的
@@ -289,11 +282,11 @@ export const useAccountsStore = defineStore('accounts', () => {
   /*
    * 待刷新池：密钥刷新与用量刷新各一条。
    *
-   * 扫描只负责入池（判断谁该刷），刷新是另一条定时任务从队首取几个去执行。
-   * 闲置账号与常规账号共用一个用量池——它们的差别只在扫描间隔（12 小时 vs 5 分钟），
+   * 检测只负责入池（判断谁该刷），刷新是另一条定时任务从队首取几个去执行。
+   * 闲置账号与常规账号共用一个用量池——它们的差别只在检测间隔（12 小时 vs 5 分钟），
    * 入池频率天然不同，FIFO 就够了，不需要再分一条池子。
    *
-   * 不做持久化：重启后池子清空，下一次扫描会重新把该刷的号收进来，行为自愈。
+   * 不做持久化：重启后池子清空，下一次检测会重新把该刷的号收进来，行为自愈。
    */
   const keyRefreshPool = createRefreshPool()
   const usageRefreshPool = createRefreshPool()
@@ -1230,7 +1223,7 @@ export const useAccountsStore = defineStore('accounts', () => {
       },
       /*
        * 主进程续期后没能写进 IDE，说明它已不是 IDE 激活账号，续期也随之停止调度。
-       * 这里同步清掉 isActive，让密钥扫描重新接管它；
+       * 这里同步清掉 isActive，让密钥检测重新接管它；
        * 否则它会被主动续期和自动刷新同时排除，一直到 token 过期才被动刷新，
        * 那时 refreshToken 很可能已被 IDE 换废。
        */
@@ -1287,17 +1280,7 @@ export const useAccountsStore = defineStore('accounts', () => {
       done: 0
     }
 
-    /*
-     * 走代理时把并发压得更低。
-     *
-     * 本地代理（Clash / v2ray 之类）对并发连接的承载远不如直连，批量刷新几百个账号时
-     * 连着开十几个 CONNECT 隧道，代理会直接重置连接，undici 统一报成 fetch failed。
-     * 这正是「换节点后再刷新就成功」的原因：不是账号有问题，是同一时刻的隧道太多。
-     * 直连时仍用用户设置的并发数，不牺牲速度。
-     */
-    const configured = settingsStore.settings.concurrency
-    const usingProxy = settingsStore.settings.proxyEnabled && !!settingsStore.settings.proxyUrl.trim()
-    const concurrency = usingProxy ? Math.min(configured, PROXY_CONCURRENCY_CAP) : configured
+    const concurrency = settingsStore.settings.concurrency
 
     // running 必须在 finally 里复位：池子里任何一个任务抛异常都会让整个 runPool reject，
     // 一旦这里漏掉复位，task.running 会永久为 true，之后所有自动刷新都会被静默跳过
@@ -1439,7 +1422,7 @@ export const useAccountsStore = defineStore('accounts', () => {
   /** 自动任务自己的串行锁，两轮同时到期时排队跑，避免互相丢轮 */
   let autoRunning = false
 
-  /** 下一轮密钥 / 用量刷新的时间戳，未启用时为 null，供界面展示 */
+  /** 下一条检测 / 刷新轨道的时间戳，未启用时为 null，供界面展示 */
   const nextKeyRefreshAt = ref<number | null>(null)
   const nextUsageRefreshAt = ref<number | null>(null)
   /**
@@ -1449,25 +1432,28 @@ export const useAccountsStore = defineStore('accounts', () => {
    * 这轮请求纯属浪费。分开计时后它按 idleUsageRefreshInterval（默认 12 小时）跑，
    * 与常规用量刷新互不影响。
    *
-   * 注意这里只是「扫描间隔」：扫描只把它们放进用量池，实际刷新由 nextPoolFlushAt 控制。
+   * 注意这里只是「检测间隔」：检测只把它们放进用量池，实际刷新由 nextUsageFlushAt 控制。
    */
   const nextIdleUsageRefreshAt = ref<number | null>(null)
   /**
-   * 池子刷新任务的下一次执行时间。
+   * 两条池子刷新轨道的下一次执行时间。
    *
-   * 和上面三个扫描时间相互独立：扫描决定「谁该刷」，这个决定「什么时候真去刷」。
-   * 拆开之后，扫描间隔调得再密也不会增加上游请求量。
+   * 和上面三个检测时间相互独立：检测决定「谁该刷」，这里决定「什么时候真去刷」。
+   * 拆开之后，检测间隔调得再密也不会增加上游请求量。
+   *
+   * 两条轨道也彼此独立：密钥池的节奏由 keyFlushInterval 控制（token 过期影响使用），
+   * 用量池由 usageFlushInterval 控制（只是界面数字），可以各调各的。
    */
-  const nextPoolFlushAt = ref<number | null>(null)
-  /** 上一次池子刷新轮到的是哪个池，用来实现两池交替 */
-  let lastFlushedPool: 'key' | 'usage' | null = null
+  const nextKeyFlushAt = ref<number | null>(null)
+  const nextUsageFlushAt = ref<number | null>(null)
 
   // 已生效的间隔（分钟）。设置对象是整体替换的，换主题、折叠侧边栏这类无关改动
-  // 也会触发外部的 watch，靠这两个值判断间隔是否真的变了，避免倒计时被无故清零
+  // 也会触发外部的 watch，靠这些值判断间隔是否真的变了，避免倒计时被无故清零
   let appliedKeyInterval = 0
   let appliedUsageInterval = 0
   let appliedIdleInterval = 0
-  let appliedPoolFlushInterval = 0
+  let appliedKeyFlushInterval = 0
+  let appliedUsageFlushInterval = 0
 
   /**
    * 上次真正跑完一轮的时间，落 localStorage 跨启动保留。
@@ -1477,7 +1463,8 @@ export const useAccountsStore = defineStore('accounts', () => {
     key: 'kal:auto-key-refresh-at',
     usage: 'kal:auto-usage-refresh-at',
     idleUsage: 'kal:auto-idle-usage-refresh-at',
-    poolFlush: 'kal:auto-pool-flush-at'
+    keyFlush: 'kal:auto-key-flush-at',
+    usageFlush: 'kal:auto-usage-flush-at'
   } as const
 
   type AutoKind = keyof typeof LAST_RUN_STORAGE
@@ -1504,26 +1491,32 @@ export const useAccountsStore = defineStore('accounts', () => {
     Math.max(1, settingsStore.settings.idleUsageRefreshInterval) * 3_600_000
 
   /**
-   * 每轮刷新最多处理多少个账号；0 表示不限制。
+   * 每次从池子里取多少个去刷新。非法值（负数、NaN、空串）回落到默认。
    *
-   * 同一出口 IP 短时间集中请求会被上游限流回 403，一轮的请求量摊开能明显降低触发概率。
-   * 非法值（负数、NaN、空串）一律按「不限制」处理，保持与旧版本一致的兜底行为。
+   * 同一出口 IP 短时间集中请求会被上游限流回 403，把这个数量摊小能明显降低触发概率。
    */
-  /** 每次从池子里取多少个去刷新；非法值回落到默认 */
-  const poolFlushSize = (): number => {
-    const raw = Number(settingsStore.settings.poolFlushSize)
-    return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_SETTINGS.poolFlushSize
+  function flushSizeOf(value: unknown, fallback: number): number {
+    const raw = Number(value)
+    return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : fallback
   }
+  const keyFlushSize = (): number =>
+    flushSizeOf(settingsStore.settings.keyFlushSize, DEFAULT_SETTINGS.keyFlushSize)
+  const usageFlushSize = (): number =>
+    flushSizeOf(settingsStore.settings.usageFlushSize, DEFAULT_SETTINGS.usageFlushSize)
 
-  /** 池子刷新间隔，换算成毫秒 */
-  const poolFlushIntervalMs = (): number =>
-    Math.max(1, Number(settingsStore.settings.poolFlushInterval) || 5) * 60_000
+  /** 池子刷新间隔，换算成毫秒；非法值回落到默认 */
+  const flushIntervalMs = (value: unknown, fallback: number): number =>
+    Math.max(1, Number(value) || fallback) * 60_000
+  const keyFlushIntervalMs = (): number =>
+    flushIntervalMs(settingsStore.settings.keyFlushInterval, DEFAULT_SETTINGS.keyFlushInterval)
+  const usageFlushIntervalMs = (): number =>
+    flushIntervalMs(settingsStore.settings.usageFlushInterval, DEFAULT_SETTINGS.usageFlushInterval)
 
   /**
-   * 扫描「即将过期的密钥」，把它们放进待刷新池。
+   * 检测「即将过期的密钥」，把它们放进待刷新池。
    *
-   * 只入池、不发请求：真正发请求由池子刷新任务按 poolFlushInterval / poolFlushSize
-   * 控制。两条时间线解耦后，扫描频率调高也不会带来更多上游请求。
+   * 只入池、不发请求：真正发请求由密钥池刷新任务按 keyFlushInterval / keyFlushSize
+   * 控制。两条时间线解耦后，检测频率调高也不会带来更多上游请求。
    *
    * refreshToken 是轮换式的，刷一次旧值立即作废，所以刷得越勤、轮换失败与限流的
    * 面就越大，而 token 本身有 1 小时寿命，没必要每轮都换。
@@ -1581,7 +1574,7 @@ export const useAccountsStore = defineStore('accounts', () => {
       return
     }
     console.info(
-      `[AutoRefresh] 密钥池扫描完成：新入池 ${added} 个，池内待刷 ${pending} 个` +
+      `[AutoRefresh] 密钥池检测完成：新入池 ${added} 个，池内待刷 ${pending} 个` +
         (capped ? `（${capped} 个已达用量阈值或正在主动续期，未入池）` : '')
     )
   }
@@ -1596,7 +1589,7 @@ export const useAccountsStore = defineStore('accounts', () => {
    * 只入池、不发请求：真正刷新由池子刷新任务按固定节奏执行。
    *
    * @param scope 'regular' 扫非闲置账号，'idle' 扫已闲置账号。
-   *   两条轨道各有各的扫描间隔（见 idleUsageIntervalMs）；入池后共用同一个池，
+   *   两条轨道各有各的检测间隔（见 idleUsageIntervalMs）；入池后共用同一个池，
    *   因为它们的入池频率天然不同，FIFO 就够了。
    */
   function scanUsage(scope: 'regular' | 'idle'): void {
@@ -1639,51 +1632,51 @@ export const useAccountsStore = defineStore('accounts', () => {
     })
     const pending = usageRefreshPool.queue.length
     console.info(
-      `[AutoRefresh] ${label}用量池扫描完成：新入池 ${added} 个，池内待刷 ${pending} 个` +
+      `[AutoRefresh] ${label}用量池检测完成：新入池 ${added} 个，池内待刷 ${pending} 个` +
         (skipped ? `（${skipped} 个封禁、凭证失效或已达阈值，未入池）` : '')
     )
   }
 
   /**
-   * 池子刷新任务：从密钥池与用量池里交替取一批去刷新，每次只刷一个池。
+   * 从密钥池取一批去刷新。
    *
-   * 交替而不是每次都刷两个池，是为了让每 n 分钟的上游请求量稳定在 x 左右；
-   * 两个池都刷就是 2x，等于把限流窗口压缩一半。某个池为空时就直接轮到另一个，
-   * 不会白占一次机会。
+   * 密钥池与用量池各有一条独立的刷新轨道（各自的间隔与每次数量），不再交替：
+   * token 过期会直接影响账号能否使用，值得比用量刷得更勤。
    *
-   * 空池不弹提示：这是每分钟都可能跑的自动任务，弹了就是刷屏。
+   * 空池不弹提示：这是几分钟就可能跑一次的自动任务，弹了就是刷屏。
    */
-  async function flushPoolTick(): Promise<void> {
-    const order: ('key' | 'usage')[] =
-      lastFlushedPool === 'key' ? ['usage', 'key'] : ['key', 'usage']
-    for (const kind of order) {
-      const pool = kind === 'key' ? keyRefreshPool : usageRefreshPool
-      if (!pool.queue.length) continue
-      const ids = drainRefreshPool(pool, poolFlushSize(), (id, stamp) =>
-        kind === 'key'
-          ? stillNeededKey(id, stamp)
-          : stillNeededUsage(id, stamp)
-      )
-      /*
-       * 池里有条目但全被剔除（账号已删、已手动刷过）时也要记账：
-       * 不记的话下一次还会先试这个已经空了的池，把交替节奏打乱。
-       */
-      lastFlushedPool = kind
-      if (!ids.length) continue
-      const startedAt = Date.now()
-      console.info(
-        `[AutoRefresh] 刷新${kind === 'key' ? '密钥' : '用量'}池：取 ${ids.length} 个，` +
-          `池内还剩 ${pool.queue.length} 个`
-      )
-      const res = await runBatch(ids, kind === 'key' ? 'refresh' : 'check')
-      console.info(
-        `[AutoRefresh] ${kind === 'key' ? '密钥' : '用量'}池刷新结束：` +
-          `成功 ${res.success}，失败 ${res.failed}，耗时 ${Math.round((Date.now() - startedAt) / 1000)}s`
-      )
-      if (res.failed) console.warn(`[AutoRefresh] 池刷新失败明细：`, res.messages)
-      return
-    }
-    // 两个池都空（或取出来全是死号）：什么都不做，等扫描把新号放进来
+  async function flushKeyPool(): Promise<void> {
+    if (!keyRefreshPool.queue.length) return
+    // 先把池里的号全部取出（含被剔除的），再看真正该刷的有几个
+    const ids = drainRefreshPool(keyRefreshPool, keyFlushSize(), stillNeededKey)
+    if (!ids.length) return
+    const startedAt = Date.now()
+    console.info(
+      `[AutoRefresh] 刷新密钥池：取 ${ids.length} 个，池内还剩 ${keyRefreshPool.queue.length} 个`
+    )
+    const res = await runBatch(ids, 'refresh')
+    console.info(
+      `[AutoRefresh] 密钥池刷新结束：成功 ${res.success}，失败 ${res.failed}，` +
+        `耗时 ${Math.round((Date.now() - startedAt) / 1000)}s`
+    )
+    if (res.failed) console.warn('[AutoRefresh] 密钥池刷新失败明细：', res.messages)
+  }
+
+  /** 从用量池取一批去刷新，同上 */
+  async function flushUsagePool(): Promise<void> {
+    if (!usageRefreshPool.queue.length) return
+    const ids = drainRefreshPool(usageRefreshPool, usageFlushSize(), stillNeededUsage)
+    if (!ids.length) return
+    const startedAt = Date.now()
+    console.info(
+      `[AutoRefresh] 刷新用量池：取 ${ids.length} 个，池内还剩 ${usageRefreshPool.queue.length} 个`
+    )
+    const res = await runBatch(ids, 'check')
+    console.info(
+      `[AutoRefresh] 用量池刷新结束：成功 ${res.success}，失败 ${res.failed}，` +
+        `耗时 ${Math.round((Date.now() - startedAt) / 1000)}s`
+    )
+    if (res.failed) console.warn('[AutoRefresh] 用量池刷新失败明细：', res.messages)
   }
 
   /** 密钥池出队判断：账号还能刷、且入池后 token 没被换过 */
@@ -1710,8 +1703,9 @@ export const useAccountsStore = defineStore('accounts', () => {
     const usageDue = nextUsageRefreshAt.value !== null && at >= nextUsageRefreshAt.value
     const idleDue =
       nextIdleUsageRefreshAt.value !== null && at >= nextIdleUsageRefreshAt.value
-    const flushDue = nextPoolFlushAt.value !== null && at >= nextPoolFlushAt.value
-    if (!keyDue && !usageDue && !idleDue && !flushDue) return
+    const keyFlushDue = nextKeyFlushAt.value !== null && at >= nextKeyFlushAt.value
+    const usageFlushDue = nextUsageFlushAt.value !== null && at >= nextUsageFlushAt.value
+    if (!keyDue && !usageDue && !idleDue && !keyFlushDue && !usageFlushDue) return
     // 手动批量操作正占用着全局任务状态：本轮不丢，等它结束后的下一个 tick 立刻补跑
     if (task.value.running) return
 
@@ -1720,8 +1714,8 @@ export const useAccountsStore = defineStore('accounts', () => {
       /*
        * 到期时间先往后推一轮再执行：中途抛异常也不会卡在「一直到期」的状态里每秒重试。
        *
-       * 扫描与刷新是两条独立时间线：扫描只入池，刷新才发请求。
-       * 扫描在入池前不需要知道池子有多长，所以直接按固定间隔排下一轮即可。
+       * 检测与刷新是两条独立时间线：检测只入池，刷新才发请求。
+       * 检测在入池前不需要知道池子有多长，所以直接按固定间隔排下一轮即可。
        */
       if (keyDue) {
         nextKeyRefreshAt.value = at + keyIntervalMs()
@@ -1738,10 +1732,19 @@ export const useAccountsStore = defineStore('accounts', () => {
         scanUsage('idle')
         markRan('idleUsage')
       }
-      if (flushDue) {
-        nextPoolFlushAt.value = at + poolFlushIntervalMs()
-        await flushPoolTick()
-        markRan('poolFlush')
+      /*
+       * 两条刷新区间彼此独立，同一次 tick 里都到期时按「密钥 → 用量」串行执行。
+       * autoRunning 锁保证不会真正并发，只是背靠背。
+       */
+      if (keyFlushDue) {
+        nextKeyFlushAt.value = at + keyFlushIntervalMs()
+        await flushKeyPool()
+        markRan('keyFlush')
+      }
+      if (usageFlushDue) {
+        nextUsageFlushAt.value = at + usageFlushIntervalMs()
+        await flushUsagePool()
+        markRan('usageFlush')
       }
     } catch (e) {
       console.error('[AutoRefresh] 本轮自动刷新异常：', e)
@@ -1770,7 +1773,7 @@ export const useAccountsStore = defineStore('accounts', () => {
   }
 
   /**
-   * 手动批量刷新完调用：让扫描轨道从现在重新计时，避免刚看完就又被扫一遍。
+   * 手动批量刷新完调用：让检测轨道从现在重新计时，避免刚看完就又被检一遍。
    *
    * 手动刷新不进池、也不影响池子刷新的节奏——池子里原有的内容照常按自己的
    * 时间点继续推进。
@@ -1786,7 +1789,7 @@ export const useAccountsStore = defineStore('accounts', () => {
     ensureTick()
   }
 
-  /** 用量扫描轨道重新计时，同上 */
+  /** 用量检测轨道重新计时，同上 */
   function scheduleUsageRefresh(): void {
     appliedUsageInterval = settingsStore.settings.usageRefreshInterval
     appliedIdleInterval = settingsStore.settings.idleUsageRefreshInterval
@@ -1810,15 +1813,14 @@ export const useAccountsStore = defineStore('accounts', () => {
    * 不必再干等一个完整间隔。
    */
   function alignNextRun(kind: AutoKind): number {
-    const interval =
-      kind === 'key'
-        ? keyIntervalMs()
-        : kind === 'idleUsage'
-          ? idleUsageIntervalMs()
-          : kind === 'poolFlush'
-            ? poolFlushIntervalMs()
-            : usageIntervalMs()
-    const due = readLastRun(kind) + interval
+    const intervalOf: Record<AutoKind, () => number> = {
+      key: keyIntervalMs,
+      usage: usageIntervalMs,
+      idleUsage: idleUsageIntervalMs,
+      keyFlush: keyFlushIntervalMs,
+      usageFlush: usageFlushIntervalMs
+    }
+    const due = readLastRun(kind) + intervalOf[kind]()
     // 已经欠一轮：统一归到当下，界面显示「本轮正在执行…」而不是一个久远的时间
     return due <= Date.now() ? Date.now() : due
   }
@@ -1847,19 +1849,28 @@ export const useAccountsStore = defineStore('accounts', () => {
   }
 
   /**
-   * 池子刷新轨道的对齐。
+   * 两条刷新区间的对齐，各自受对应的检测开关门控。
    *
-   * 两个扫描开关都关掉时也停掉它——没有扫描就没人往池子里放号，
-   * 继续跑只是空转。任一扫描开着就照常跑（另一个池可能还有积压）。
+   * 某个检测开关关掉时它的池子不会再有新号进来，但池里可能还有积压，
+   * 所以刷新轨道跟着开关走：关掉检测就不再刷新那个池。
    */
-  function alignPoolFlush(): void {
-    appliedPoolFlushInterval = settingsStore.settings.poolFlushInterval
-    const anyAuto = settingsStore.settings.autoRefresh || settingsStore.settings.autoRefreshUsage
-    if (!anyAuto) {
-      nextPoolFlushAt.value = null
+  function alignKeyFlush(): void {
+    appliedKeyFlushInterval = settingsStore.settings.keyFlushInterval
+    if (!settingsStore.settings.autoRefresh) {
+      nextKeyFlushAt.value = null
       return
     }
-    nextPoolFlushAt.value = alignNextRun('poolFlush')
+    nextKeyFlushAt.value = alignNextRun('keyFlush')
+    ensureTick()
+  }
+
+  function alignUsageFlush(): void {
+    appliedUsageFlushInterval = settingsStore.settings.usageFlushInterval
+    if (!settingsStore.settings.autoRefreshUsage) {
+      nextUsageFlushAt.value = null
+      return
+    }
+    nextUsageFlushAt.value = alignNextRun('usageFlush')
     ensureTick()
   }
 
@@ -1877,7 +1888,8 @@ export const useAccountsStore = defineStore('accounts', () => {
       keyRefreshInterval,
       usageRefreshInterval,
       idleUsageRefreshInterval,
-      poolFlushInterval
+      keyFlushInterval,
+      usageFlushInterval
     } = settingsStore.settings
     // 用 align 而不是 schedule：冷启动或改短间隔后若已欠一轮，会立刻补跑
     if (!autoRefresh) nextKeyRefreshAt.value = null
@@ -1894,18 +1906,25 @@ export const useAccountsStore = defineStore('accounts', () => {
     ) {
       alignUsageRefresh()
     }
-    // 池子刷新轨道独立于上面两条：任一扫描开着就需要它把池子里的号刷出去
-    const anyScan = autoRefresh || autoRefreshUsage
-    if (!anyScan) nextPoolFlushAt.value = null
-    else if (nextPoolFlushAt.value === null || appliedPoolFlushInterval !== poolFlushInterval) {
-      alignPoolFlush()
+    // 两条池子刷新轨道各自跟着自己的检测开关与间隔
+    if (!autoRefresh) nextKeyFlushAt.value = null
+    else if (nextKeyFlushAt.value === null || appliedKeyFlushInterval !== keyFlushInterval) {
+      alignKeyFlush()
+    }
+    if (!autoRefreshUsage) nextUsageFlushAt.value = null
+    else if (
+      nextUsageFlushAt.value === null ||
+      appliedUsageFlushInterval !== usageFlushInterval
+    ) {
+      alignUsageFlush()
     }
 
     if (
       nextKeyRefreshAt.value === null &&
       nextUsageRefreshAt.value === null &&
       nextIdleUsageRefreshAt.value === null &&
-      nextPoolFlushAt.value === null
+      nextKeyFlushAt.value === null &&
+      nextUsageFlushAt.value === null
     ) {
       stopTick()
     } else {
@@ -1918,7 +1937,8 @@ export const useAccountsStore = defineStore('accounts', () => {
     nextKeyRefreshAt.value = null
     nextUsageRefreshAt.value = null
     nextIdleUsageRefreshAt.value = null
-    nextPoolFlushAt.value = null
+    nextKeyFlushAt.value = null
+    nextUsageFlushAt.value = null
   }
 
   return {
@@ -1975,7 +1995,8 @@ export const useAccountsStore = defineStore('accounts', () => {
     nextKeyRefreshAt,
     nextUsageRefreshAt,
     nextIdleUsageRefreshAt,
-    nextPoolFlushAt,
+    nextKeyFlushAt,
+    nextUsageFlushAt,
     scheduleKeyRefresh,
     scheduleUsageRefresh,
     startAutoRefresh,

@@ -1464,24 +1464,33 @@ export interface AppSettings {
    */
   skipKeyRefreshAtUsageLimit: boolean
   /**
-   * 池子刷新的间隔（分钟）：每隔这么久从待刷新池里取一批真正去刷。
+   * 密钥池的刷新间隔（分钟）：每隔这么久从密钥待刷新池里取一批真正去刷。
    *
-   * 扫描（判断谁该刷）和刷新（真正发请求）是两条独立的时间线：
-   * 扫描沿用 keyRefreshInterval / usageRefreshInterval，它们只负责把符合条件的账号
-   * 放进池子；真正发请求由这个间隔控制，两个池交替执行。
+   * 「检测」与「刷新」是两条独立的时间线：keyRefreshInterval 只负责判断谁的 token
+   * 快过期并把它放进池子，真正发请求由这个间隔控制。密钥与用量各有各的节奏，
+   * 因为两者的代价不同——token 过期会直接影响使用，用量只是界面上的数字。
    *
    * 同一出口 IP 短时间集中请求会被 Kiro 限流回 403，把请求按固定节奏摊开是
    * 最直接的规避手段。调小能更快排空池子，但触发限流的概率也会上升。
    */
-  poolFlushInterval: number
+  keyFlushInterval: number
+  /** 每次从密钥池里取多少个账号去刷新；取太多等于回到一次性刷一大批 */
+  keyFlushSize: number
   /**
-   * 每次从池子里取多少个账号去刷新。
+   * 用量池的刷新间隔（分钟）：每隔这么久从用量待刷新池里取一批真正去刷。
    *
-   * 两个池交替执行，所以单个池的实际刷新周期约为 poolFlushInterval × 2。
-   * 取太多等于回到「一次性刷一大批」，取太少则池子排得很长。
+   * 用量刷新只影响界面上的数字，不像 token 过期那样有使用后果，
+   * 所以默认比密钥池放得更慢。
    */
-  poolFlushSize: number
-  /** 批量并发 */
+  usageFlushInterval: number
+  /** 每次从用量池里取多少个账号去刷新 */
+  usageFlushSize: number
+  /**
+   * 批量并发：一个批次内部同时发出几个请求。
+   *
+   * 与「每次刷新数量」是两个维度：后者决定这一轮取多少个账号，
+   * 前者决定这些账号里同时跑几个。两者相乘才是瞬时请求量的上界。
+   */
   concurrency: number
   /** 用量接口类型 */
   usageApiType: 'rest' | 'cbor'
@@ -1579,10 +1588,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
   idleUsageRefreshInterval: 12,
   // 0 = 关闭：默认不按用量百分比拦截，保持与旧版本一致的行为
   usageRefreshMaxPercent: 0,
-  // 每 5 分钟从池子里取一批去刷；与扫描间隔解耦，专门用来摊平请求
-  poolFlushInterval: 5,
-  // 每次取 20 个；两个池交替，单池实际约 10 分钟轮到一次
-  poolFlushSize: 20,
+  // 密钥池：token 过期会直接影响使用，默认更积极（每 5 分钟取 20 个）
+  keyFlushInterval: 5,
+  keyFlushSize: 20,
+  // 用量池：只影响界面数字，放慢一些（每 10 分钟取 20 个）
+  usageFlushInterval: 10,
+  usageFlushSize: 20,
   concurrency: 5,
   usageApiType: 'rest',
   importConcurrency: 50,
